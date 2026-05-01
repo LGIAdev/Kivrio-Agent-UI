@@ -1,0 +1,14 @@
+.login-splash{ display:grid; place-items:center; height:100vh; background:transparent; padding:24px }
+.login-card{ background:#000000; border:1px solid #1b1f2a; border-radius:14px; padding:32px 28px; min-width:320px; text-align:center; color:#e6e9ef; box-shadow:0 12px 40px rgba(0,0,0,.25) }
+.login-brand{ font-weight:700; margin-bottom:6px; color:#e6e9ef }
+.login-title{ font-size:1.25rem; margin:4px 0 18px 0; color:#ffffff }
+.login-hint{ margin:0 0 16px 0; color:#cbd5e1; font-size:.95rem; line-height:1.4; text-align:left }
+.login-form{ display:grid; gap:12px; text-align:left }
+.login-field{ display:grid; gap:6px }
+.login-label{ font-size:.95rem; color:#ffffff }
+.login-input{ width:100%; padding:12px 14px; border-radius:10px; border:1px solid #1b1f2a; background:#0b0d12; color:#e6e9ef; font:inherit }
+.login-input:focus{ outline:2px solid #6ea8fe; outline-offset:2px; border-color:#6ea8fe }
+.login-error{ margin:0; min-height:1.25em; color:#f87171; font-size:.92rem }
+.login-btn{ display:inline-block; padding:10px 16px; border-radius:10px; border:1px solid #6ea8fe; background:#6ea8fe; color:#fff; text-decoration:none; font-weight:600 }
+.login-btn:focus{ outline:2px solid #6ea8fe; outline-offset:2px }
+.login-btn:disabled{ opacity:.7; cursor:not-allowed }

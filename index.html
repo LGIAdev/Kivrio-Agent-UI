@@ -1,0 +1,221 @@
+﻿<!doctype html>
+<html lang="fr" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kivrio Agent UI</title>
+  <link rel="stylesheet" href="css/theme.css" />
+  <link rel="stylesheet" href="css/layout.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/auth.css" />
+  <link rel="stylesheet" href="css/katex.min.css">
+  <link rel="stylesheet" href="css/chat.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <button
+        class="sidebar-toggle sidebar-toggle-close"
+        id="sidebar-toggle-close"
+        type="button"
+        aria-label="Fermer la barre laterale"
+        aria-expanded="true"
+      >
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M15 6l-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <div class="side-head">
+        <div class="brand-left" aria-label="Kivrio Agent UI">
+          <!-- Monogramme cercle K -->
+          <svg class="brand-mark" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="12" fill="currentColor"/>
+            <text x="12" y="12"
+                  text-anchor="middle" dominant-baseline="middle"
+                  font-family="Inter, Manrope, Arial, sans-serif"
+                  font-weight="800" font-size="14"
+                  fill="var(--brand-contrast)">K</text>
+          </svg>
+          <span class="brand-name">Kivrio Agent UI</span>
+       </div>
+      <button class="btn" id="new-chat" title="Nouvelle conversation">＋ Nouvelle conversation</button>
+      <button class="btn" id="new-folder" title="Nouveau dossier">Nouveau dossier</button>
+	  </div>
+      <div class="side-search">
+        <input placeholder="Recherche" aria-label="Recherche" />
+      </div>
+      <div class="side-section">
+        <div id="history"></div>
+      </div>
+
+      <!-- Menu utilisateur (affichage après clic sur User) -->
+      <div class="user-menu" id="user-menu" aria-hidden="true">
+        <a class="conv" id="settings-entry" href="#" role="menuitem" tabindex="0" aria-label="Réglages">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 8a4 4 0 100 8 4 4 0 000-8Zm8 4a7.97 7.97 0 00-.23-1.87l2.02-1.57-2-3.46-2.45 1a8.05 8.05 0 00-3.24-1.88l-.37-2.6H10.3l-.37 2.6a8.05 8.05 0 00-3.24 1.88l-2.45-1-2 3.46 2.02 1.57A8.07 8.07 0 004 12c0 .64.08 1.26.23 1.87L2.21 15.4l2 3.46 2.45-1c.94 .78 2.02 1.38 3.24 1.88l.37 2.6h3.1l.37-2.6a8.05 8.05 0 003.24-1.88l2.45 1 2-3.46-2.02-1.53c.15-.63.23-1.27.23-1.91Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+		  Réglages
+        </a>
+        <a class="conv" id="prompt-entry" href="#" role="menuitem" tabindex="0" aria-label="Prompt système">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="5" y="3" width="14" height="18" rx="2" stroke="currentColor" stroke-width="1.4"/>
+            <path d="M8 8h8M8 12h8M8 16h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+		  Prompt système
+        </a>
+        <a class="conv" id="logout-entry" href="#" role="menuitem" tabindex="0" aria-label="Déconnexion" style="color:#f87171">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M16 17v1a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M21 12H9m0 0l3-3m-3 3l3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+		  Déconnexion
+        </a>
+      </div>
+
+      <div class="side-footer" id="user-entry" role="button" tabindex="0" aria-label="User">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="3" fill="currentColor"/></svg>
+        <div>User</div>
+      </div>
+    </aside>
+    <div
+      class="sidebar-resizer"
+      id="sidebar-resizer"
+      role="separator"
+      aria-label="Redimensionner la barre laterale"
+      aria-orientation="vertical"
+    ></div>
+
+    <main class="main">
+    <button
+      class="sidebar-toggle sidebar-toggle-open"
+      id="sidebar-toggle-open"
+      type="button"
+      aria-label="Ouvrir la barre laterale"
+      aria-expanded="false"
+    >
+      <div class="brand-left" aria-hidden="true">
+        <svg class="brand-mark" width="20" height="20" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="12" fill="currentColor"/>
+          <text x="12" y="12"
+                text-anchor="middle" dominant-baseline="middle"
+                font-family="Inter, Manrope, Arial, sans-serif"
+                font-weight="800" font-size="14"
+                fill="var(--brand-contrast)">K</text>
+        </svg>
+        <span class="brand-name">Kivrio Agent UI</span>
+      </div>
+    </button>
+    <!-- Topbar avec sélecteur de modèles -->
+    <header class="topbar" role="navigation" aria-label="Barre supérieure" style="justify-content:flex-end;">
+      <div class="right-tools">
+        <div class="model-picker">
+          <svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3l9 6-9 6-9-6 9-6Zm0 9l9 6-9 6-9-6 9-6Z" fill="currentColor" opacity=".6"/>
+          </svg>
+          <select id="model-select" autocomplete="off" title="Sélection du modèle">
+            <option>Chargement</option>
+          </select>
+        </div>
+      </div>
+    </header>
+
+      <section class="center">
+        <div class="logo"><span>Kivrio Agent UI</span></div>
+        <div id="model-label" style="font-size:1.4rem; font-weight:600; opacity:.95;">gpt-oss:20b</div>
+      </section>
+
+      <!-- Barre d'invite améliorée -->
+<div class="composer-card">
+  <div class="composer-header">
+    <button class="icon-btn" id="add-btn" title="Ajouter un fichier" type="button" aria-label="Ajouter un fichier">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    </button>
+    <div class="actions">
+      <button class="icon-btn" id="mic-btn" title="Micro (a venir)" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 1a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V4a3 3 0 0 1 3-3z"/>
+          <path d="M19 10v1a7 7 0 0 1-14 0v-1"/>
+          <path d="M12 19v4"/>
+        </svg>
+      </button>
+      <button class="icon-btn" id="send-btn" title="Envoyer (Ctrl+Entree)" type="button">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M5 12h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <textarea id="composer-input" class="composer-input" placeholder="Entrez votre question" rows="1" wrap="soft"></textarea>
+  <input type="file" id="file-input" class="file-input-proxy" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.txt,.md" />
+  <div id="composer-attachments" class="composer-attachments" aria-live="polite"></div>
+  <p id="composer-upload-error" class="composer-upload-error" hidden></p>
+</div>
+    </main>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Réglages">
+    <div class="settings-card" role="document">
+      <div class="settings-head">
+        <div class="settings-tabs">
+          <button class="settings-tab active" type="button" aria-selected="true">Réglages</button>
+        </div>
+      </div>
+      <div class="settings-body">
+        <div class="settings-section">
+          <div class="settings-title">Général</div>
+          <div class="settings-item">
+            <label class="settings-label">Thème</label>
+            <div class="settings-controls">
+              <label class="radio"><input type="radio" name="theme" id="theme-dark" value="dark"> Sombre</label>
+              <label class="radio"><input type="radio" name="theme" id="theme-light" value="light"> Clair</label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt modal -->
+  <div id="prompt-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Prompt système">
+    <div class="settings-card prompt-card" role="document">
+      <div class="settings-head">
+        <div class="settings-tabs">
+          <button class="settings-tab active" type="button" aria-selected="true">Prompt système</button>
+        </div>
+      </div>
+      <div class="settings-body">
+        <div class="settings-section">
+          <div class="settings-item" style="grid-template-columns:1fr;">
+            <label class="settings-label" for="prompt-text" style="margin-bottom:6px">Instructions pour le comportement de l'IA</label>
+            <textarea id="prompt-text" placeholder="Décrivez ici les consignes système (ton, contraintes, règles, etc.)." style="width:100%; min-height:220px; resize:vertical;"></textarea>
+          </div>
+          <div class="settings-item" style="grid-template-columns:1fr;">
+            <div class="modal-actions" style="display:flex; justify-content:flex-end; gap:10px; width:100%;">
+              <button id="prompt-save" class="btn" style="background:var(--accent); border-color:var(--accent); color:white;">Enregistrer</button>
+              <button class="icon-btn" id="model-dash" title="Dialogue modèle">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+  <script type="module" src="js/ui/autogrow.js"></script>
+  <script type="module">
+  import { mountModelSelect } from './js/ui/components/ModelSelect.js';
+  import './js/chat/render.js';
+  window.addEventListener('DOMContentLoaded', mountModelSelect);
+  </script>
+
+</body>
+</html>

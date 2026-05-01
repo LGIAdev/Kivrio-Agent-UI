@@ -1,0 +1,88 @@
+:root{
+  --bg:#0f1115; --panel:#000000; --panel-2:#0b0d12; --border:#1b1f2a;
+  --text:#e6e9ef; --muted:#9aa3b2; --accent:#6ea8fe; --chip:#1b2230;
+  --chip-border:#26344a; --hover:#151924; --green:#a5f3c7;
+  --surface-card:#0c1119; --surface-card-hover:#151924; --surface-card-active:#1c2533;
+  --surface-field:#0e131c; --surface-soft:#131723;
+}
+:root[data-theme="light"]{
+  --bg:#f8fafc; --panel:#ffffff; --panel-2:#f2f5f9; --border:#d9e1ea;
+  --text:#000000; --muted:#475569; --accent:#2563eb; --chip:#eef2f7;
+  --chip-border:#d8e0ea; --hover:#edf2f7; --green:#0f9d58;
+  --surface-card:#f7f9fc; --surface-card-hover:#f0f4f8; --surface-card-active:#e8eef6;
+  --surface-field:#ffffff; --surface-soft:#eef4fa;
+}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans";
+  -webkit-font-smoothing:antialiased; line-height:1.45;
+}
+/* Patches light (logo/composer/sidebar/prompt/add) */
+:root[data-theme="light"] .logo{
+  background:var(--surface-card);
+  color:var(--text);
+  border:1px solid var(--border);
+  box-shadow:0 8px 20px rgba(15,23,42,.06);
+}
+:root[data-theme="light"] .logo span{ color:var(--text); }
+
+/* Composer corrigé */
+
+/* Titre "Entrez votre question" */
+:root[data-theme="light"] .composer-header > div:first-child{ color:var(--muted); opacity:.9; }
+
+/* Zone de saisie */
+
+/* Icônes micro / casque / envoyer */
+:root[data-theme="light"] .composer-card .icon-btn{
+  color:var(--text);
+  background:var(--surface-card);
+  border-color:var(--border);
+}
+:root[data-theme="light"] .composer-card .icon-btn svg{
+  stroke:currentColor;
+  fill:none;
+}
+
+:root[data-theme="light"] .side-head .btn{
+  color:var(--text);
+  background:var(--surface-card);
+  border-color:var(--border);
+}
+:root[data-theme="light"] .side-head .btn:hover{ background:var(--surface-card-hover); }
+:root[data-theme="light"] .side-search input{
+  color:var(--text);
+  background:var(--surface-card);
+  border-color:var(--border);
+}
+:root[data-theme="light"] .side-search input::placeholder{ color:#64748b; }
+:root[data-theme="light"] .sidebar-toggle{
+  background:rgba(255,255,255,.92);
+  color:var(--text);
+  border-color:rgba(148,163,184,.35);
+  box-shadow:0 8px 18px rgba(15,23,42,.08);
+}
+:root[data-theme="light"] .sidebar-toggle:hover,
+:root[data-theme="light"] .sidebar-toggle:focus-visible{
+  background:var(--surface-card-hover);
+  border-color:#c7d4e3;
+}
+:root[data-theme="light"] #prompt-modal .settings-card{ background:#fff; color:var(--text); border-color:var(--border); }
+:root[data-theme="dark"] #settings-modal .settings-tab.active{
+  background:transparent;
+  color:var(--text);
+}
+:root[data-theme="light"] #prompt-modal .settings-head{ border-bottom:1px solid var(--border); }
+:root[data-theme="light"] #prompt-modal .settings-tab{ background:#eef2f7; border-color:#d8e0ea; color:#0b1220; }
+:root[data-theme="light"] #prompt-modal #prompt-text{ background:#fff !important; color:#0b1220; border-color:#d9e1ea; }
+:root[data-theme="light"] #prompt-modal #prompt-text::placeholder{ color:#64748b; opacity:1; }
+:root[data-theme="light"] #prompt-modal .icon-btn{
+  background:var(--surface-card);
+  border-color:var(--border);
+  color:var(--text);
+}
+/* Selection state */
+:root{ --sel-bg: var(--hover); --sel-fg: var(--text); }
+:root[data-theme="dark"]{ --sel-bg:#1c2533; --sel-fg:#e6e9ef; }
+:root[data-theme="light"]{ --sel-bg:var(--surface-card-active); --sel-fg:var(--text); }

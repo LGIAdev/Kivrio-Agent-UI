@@ -1,0 +1,753 @@
+/* =====================================================================
+   components.css — Kivrio Agent UI (reecrit proprement)
+   Sections:
+   1) Chat / Messages
+   2) Pastilles / Status
+   3) Modales / Réglages
+   4) Branding / Sidebar
+   5) Topbar (sélecteur de modèles)
+   6) Barre d’invite (composer) + icônes
+   ===================================================================== */
+
+   /* === KaTeX styles (offline, local) === */
+   @import url("../assets/vendor/katex/katex.min.css");
+
+/* ===================== 1) Chat / Messages ========================= */
+.chat-log{
+  width:80%;               /* largeur stable proportionnelle à l’écran */
+  max-width:920px;        /* limite sur grands écrans */
+  margin:20px auto 8px auto;
+  padding:0 16px;
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+}
+.msg {
+  display: flex;
+  flex-direction: column; /* 👉 rôle au-dessus, bulle en dessous */
+  align-items: flex-start; 
+  gap: 4px; /* petit espace vertical */
+}
+.msg .role {
+  font-weight: 600;
+  opacity: .8;
+  min-width: auto;   /* 👉 plus besoin de largeur fixe */
+  align-self: flex-start; /* toujours calé à gauche */
+}
+.msg .bubble{
+  background:var(--surface-soft);
+  border:1px solid var(--border);
+  padding:12px 14px;
+  border-radius:12px;
+
+  /* Gestion du texte et largeur */
+  white-space:pre-wrap;
+  word-wrap:break-word;
+  overflow-wrap:break-word;
+  max-width:100%;
+  box-sizing:border-box;
+}
+.msg.user .bubble{ background:transparent; border-style:dashed; }
+.message-body{
+  max-width:100%;
+  display:inline-flex;
+  flex-direction:column;
+  align-items:flex-end;
+  gap:6px;
+  align-self:flex-start;
+}
+.message-actions{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:8px;
+  min-height:34px;
+}
+.message-actions.is-hover{
+  opacity:0;
+  pointer-events:none;
+  transition:opacity .16s ease;
+}
+.msg.user .message-body:hover .message-actions.is-hover,
+.msg.user .message-body:focus-within .message-actions.is-hover{
+  opacity:1;
+  pointer-events:auto;
+}
+.message-body.is-editing .message-actions{
+  display:none;
+}
+.message-action-button{
+  position:relative;
+  width:30px;
+  height:30px;
+  border:0;
+  border-radius:999px;
+  background:transparent;
+  color:var(--muted);
+  display:grid;
+  place-items:center;
+  cursor:pointer;
+  transition:background .16s ease, color .16s ease, transform .16s ease;
+}
+.message-action-button svg{
+  width:18px;
+  height:18px;
+}
+.message-action-button:hover,
+.message-action-button:focus-visible{
+  background:var(--hover);
+  color:var(--text);
+  transform:translateY(-1px);
+  outline:none;
+}
+.message-action-button:disabled{
+  opacity:.45;
+  cursor:not-allowed;
+  transform:none;
+}
+.message-action-button::after{
+  content:attr(data-label);
+  position:absolute;
+  top:calc(100% + 6px);
+  left:50%;
+  transform:translateX(-50%);
+  padding:4px 8px;
+  border-radius:999px;
+  background:#0c1119;
+  border:1px solid var(--border);
+  color:var(--text);
+  font-size:.72rem;
+  line-height:1;
+  white-space:nowrap;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity .14s ease;
+  z-index:5;
+}
+.message-action-button:hover::after,
+.message-action-button:focus-visible::after{
+  opacity:1;
+}
+.copy-toast{
+  position:fixed;
+  top:18px;
+  right:18px;
+  max-width:min(340px, calc(100vw - 32px));
+  padding:11px 14px;
+  border:1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius:14px;
+  background:color-mix(in srgb, var(--surface) 92%, white 8%);
+  color:var(--text);
+  box-shadow:0 14px 34px rgba(12, 17, 25, .18);
+  opacity:0;
+  transform:translateY(-10px);
+  transition:opacity .18s ease, transform .18s ease;
+  pointer-events:none;
+  z-index:90;
+}
+.copy-toast.is-visible{
+  opacity:1;
+  transform:translateY(0);
+}
+.message-edit-shell{
+  display:grid;
+  gap:12px;
+  width:fit-content;
+  max-width:100%;
+}
+.message-edit-textarea{
+  width:100%;
+  min-width:0;
+  min-height:120px;
+  padding:12px 14px;
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:var(--surface-field);
+  color:var(--text);
+  resize:vertical;
+  box-sizing:border-box;
+  font:inherit;
+  line-height:1.5;
+}
+.message-edit-textarea:focus{
+  outline:1px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  border-color:color-mix(in srgb, var(--accent) 60%, var(--border));
+}
+.message-edit-footer{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.message-edit-status{
+  min-height:1.1rem;
+  color:var(--muted);
+  font-size:.82rem;
+}
+.message-edit-actions{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.message-edit-button{
+  border:1px solid var(--border);
+  border-radius:999px;
+  background:transparent;
+  color:var(--text);
+  padding:7px 12px;
+  cursor:pointer;
+  font:inherit;
+  transition:background .16s ease, border-color .16s ease;
+}
+.message-edit-button:hover,
+.message-edit-button:focus-visible{
+  background:var(--hover);
+  outline:none;
+}
+.message-edit-button.is-primary{
+  background:var(--accent);
+  border-color:var(--accent);
+  color:#fff;
+}
+.message-edit-button.is-primary:hover,
+.message-edit-button.is-primary:focus-visible{
+  filter:brightness(1.06);
+}
+.message-edit-button:disabled{
+  opacity:.65;
+  cursor:wait;
+}
+.assistant-response{
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+}
+.assistant-reasoning{
+  border:1px solid var(--border);
+  border-radius:10px;
+  background:color-mix(in srgb, var(--surface-soft) 82%, transparent);
+}
+.assistant-reasoning-toggle{
+  width:100%;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:10px 12px;
+  border:none;
+  background:transparent;
+  color:var(--text);
+  cursor:pointer;
+  text-align:left;
+  font:inherit;
+}
+.assistant-reasoning-toggle:hover{
+  background:color-mix(in srgb, var(--hover) 70%, transparent);
+}
+.assistant-reasoning-toggle[aria-expanded="true"]{
+  border-bottom:1px solid var(--border);
+}
+.assistant-reasoning-label{
+  font-weight:600;
+  opacity:.95;
+}
+.assistant-reasoning-chevron{
+  flex:0 0 auto;
+  width:10px;
+  height:10px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  transition:transform .18s ease;
+}
+.assistant-reasoning-chevron::before{
+  content:"";
+  width:6px;
+  height:6px;
+  border-right:1.5px solid currentColor;
+  border-bottom:1.5px solid currentColor;
+  transform:rotate(45deg) translateY(-1px);
+}
+.assistant-reasoning-toggle[aria-expanded="true"] .assistant-reasoning-chevron{
+  transform:rotate(180deg);
+}
+.assistant-reasoning-panel{
+  padding:12px;
+}
+.assistant-reasoning-panel[hidden]{
+  display:none;
+}
+.assistant-answer{
+  min-width:0;
+}
+
+/* ===================== 2) Pastilles / Status ====================== */
+.status-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  border:1px solid var(--border);
+  padding:6px 10px;
+  border-radius:16px;
+  font-size:.9rem;
+  opacity:.9;
+}
+.status-ok{ color:var(--accent); }
+.status-bad{ color:#ef4444; }
+
+/* ===================== 3) Modales / Réglages ====================== */
+.modal-overlay{
+  display:none;
+  position:fixed; inset:0;
+  background:rgba(0,0,0,.5);
+  z-index:999;
+  align-items:center; justify-content:center;
+}
+.modal-card{
+  background:#0c1119;
+  padding:20px; border-radius:12px; min-width:300px;
+  display:flex; align-items:center; gap:10px; color:var(--text);
+  border:1px solid var(--border);
+}
+
+.settings-card{
+  background:var(--panel); color:var(--text);
+  border:1px solid var(--border);
+  border-radius:14px;
+  min-width:520px; max-width:min(92vw, 720px);
+  box-shadow:0 12px 40px rgba(0,0,0,.25);
+}
+.settings-head{ padding:14px 16px; border-bottom:1px solid var(--border); }
+.settings-tabs{ display:flex; gap:8px; }
+.settings-tab{
+  background:var(--chip);
+  border:1px solid var(--chip-border);
+  border-radius:10px;
+  padding:8px 10px;
+  cursor:pointer;
+}
+.settings-tab.active{ background:var(--hover); }
+.settings-body{ padding:16px; }
+.settings-section{ display:flex; flex-direction:column; gap:16px; }
+.settings-title{ font-weight:600; color:var(--muted); font-size:.9rem; }
+.settings-item{ display:grid; grid-template-columns:140px 1fr; gap:12px; align-items:center; }
+.settings-controls{ display:flex; gap:16px; align-items:center; }
+.radio input{ margin-right:6px; }
+
+/* ===================== 4) Branding / Sidebar ====================== */
+.brand-left{ display:flex; align-items:center; gap:6px; line-height:1; }
+.brand-left .brand-mark{ display:block; }
+.brand-left .brand-name{ font-weight:700; letter-spacing:.2px; }
+
+/* Contraste du logo si nécessaire */
+:root { --brand-contrast: #ffffff; }
+[data-theme="light"] { --brand-contrast:#ffffff; }
+[data-theme="dark"]  { --brand-contrast:#0b1220; }
+.brand-left .brand-mark text{
+  paint-order: stroke fill; stroke: rgba(0,0,0,.25); stroke-width:.5px;
+}
+
+/* Sidebar */
+.sidebar{ overflow-x:hidden; }
+.sidebar .side-search{ margin:2px 2px; }
+.sidebar .side-search input{
+  display:block; width:100%; max-width:100%; box-sizing:border-box;
+  padding:10px 14px; border-radius:12px;
+}
+
+/* ===================== 6) Barre d’invite (composer) =============== */
+.composer-card{
+  background:var(--surface-field);
+  border:1px solid var(--border);
+  border-radius:16px;
+  padding:16px;
+  color:var(--text);
+  box-shadow:0 0 0 1px rgba(255,255,255,.02) inset;
+
+  /* largeur harmonieuse + centrage */
+  width:80%;
+  max-width:900px;
+  margin:0 auto;
+}
+.composer-header{
+  display:flex; align-items:center; justify-content:space-between;
+  margin-bottom:8px;
+}
+.actions{
+  margin-left:auto;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
+/* Zone de saisie (textarea) — autosize + alignement */
+.composer-input{
+  width:100%;
+  background:var(--surface-card);
+  color:var(--text);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:14px 16px;
+  outline:none;
+
+  /* ✅ corrige le débordement à droite */
+  box-sizing:border-box;
+  display:block;
+
+  /* Autosize (géré aussi par js/ui/autogrow.js) */
+  resize:none;
+  overflow:hidden;
+  min-height:48px;
+  max-height:240px;
+  line-height:1.4;
+  font-size:16px;
+}
+
+.file-input-proxy{
+  position:absolute;
+  width:1px;
+  height:1px;
+  padding:0;
+  margin:-1px;
+  overflow:hidden;
+  clip:rect(0, 0, 0, 0);
+  clip-path:inset(50%);
+  border:0;
+  white-space:nowrap;
+}
+.toolbar{ display:flex; align-items:center; gap:8px; margin-top:8px; }
+.pill{
+  background:var(--surface-soft);
+  border:1px solid var(--border);
+  color:var(--subtle);
+  padding:6px 10px;
+  border-radius:999px;
+  font-size:12px;
+}
+
+/* Boutons d'icone : ajouter un fichier, micro, envoyer */
+.icon-btn{
+  display:grid;
+  place-items:center;
+  width:36px; height:36px;
+  border-radius:10px;
+  border:1px solid var(--border);
+  background:var(--surface-card);
+  color:var(--text);
+  cursor:pointer;
+}
+
+/* Icones visibles */
+.icon-btn svg{
+  width:18px; height:18px; display:block;
+  stroke:currentColor; fill:none; stroke-width:1.8;
+}
+
+/* Bouton envoyer en accent circulaire */
+.icon-btn#send-btn{
+  background:var(--accent);
+  color:#fff;
+  border-color:transparent;
+  border-radius:999px;
+}
+.icon-btn#send-btn:hover{ filter:brightness(1.08); }
+.icon-btn#send-btn.is-busy,
+.icon-btn#send-btn:disabled{
+  opacity:.72;
+  cursor:progress;
+  filter:none;
+}
+
+/* Mode clair - surfaces discretes */
+:root[data-theme="light"] .composer-card{
+  background:var(--surface-field);
+  border-color:var(--border);
+  box-shadow:0 12px 30px rgba(15,23,42,.08);
+}
+
+:root[data-theme="light"] .composer-input{
+  background:var(--surface-card);
+  color:var(--text);
+  border-color:var(--border);
+  caret-color:var(--text);
+}
+
+:root[data-theme="light"] .composer-input::placeholder{
+  color:#64748b;
+}
+
+:root[data-theme="dark"] #model-select{ color-scheme: dark; }
+
+/* Fallback si non supporté */
+@supports not (color-scheme: dark){
+  :root[data-theme="dark"] #model-select{
+    background:#0f172a; color:#e5e7eb;
+    border:1px solid #334155; border-radius:8px;
+  }
+  :root[data-theme="dark"] #model-select:focus{
+    outline:none; box-shadow:0 0 0 2px rgba(59,130,246,.35); border-color:#60a5fa;
+  }
+  :root[data-theme="dark"] #model-select option,
+  :root[data-theme="dark"] #model-select optgroup{
+    background:#0f172a; color:#e5e7eb;
+  }
+}
+
+/* Contenir KaTeX dans la bulle de chat sans barres parasites */
+.msg .bubble .katex-display{
+  overflow-x:hidden;     /* empêche la barre horizontale */
+  overflow-y:hidden;   /* empêche la barre verticale */
+  max-width:100%;
+}
+.msg .bubble .katex-display > .katex{ max-width:100%; }  /* pas de white-space forcé */
+.msg .bubble .katex{ max-width:100%; }
+.msg .bubble .katex img{ max-width:100%; height:auto; }
+
+/* ===================== 7) Tableaux (chat) ====================== */
+
+/* La bulle peut scroller horizontalement si le tableau est plus large */
+.msg .bubble{
+  overflow-x:auto;
+}
+
+/* Table principale (ne dépasse pas la bulle, peut déclencher un scroll) */
+.msg .bubble table{
+  width:max-content;  /* laisse le tableau s'élargir si le nombre de colonnes l'impose */
+  table-layout:fixed;           /* colonnes stables pour un retour à la ligne lisible */
+  min-width:100%;  /* au moins la largeur de la bulle */
+  max-width:none;
+
+  /* Styles existants conservés */
+  border-collapse:separate;     /* coins arrondis fiables */
+  border-spacing:0;
+  margin:14px 0;
+  font-size:.95rem;
+  background:var(--panel);
+  border:2px solid var(--border);
+  border-radius:8px;
+  box-shadow:0 2px 12px rgba(0,0,0,.06);
+}
+
+/* En-tête */
+.msg .bubble thead th{
+  padding:10px 14px;
+  font-weight:700;
+  text-align:center;
+  background:var(--hover);
+  color:var(--text);
+  border-right:1px solid var(--border);
+  border-bottom:2px solid var(--border);
+}
+.msg .bubble thead th:last-child{ border-right:none; }
+
+/* Corps */
+.msg .bubble tbody td{
+  padding:10px 14px;
+  text-align:left;
+  vertical-align:top;
+  background:transparent;
+  color:var(--text);
+  border-right:1px solid var(--border);
+  border-bottom:1px solid var(--border);
+}
+.msg .bubble tbody td:last-child{ border-right:none; }
+.msg .bubble tbody tr:last-child td{ border-bottom:none; }
+
+/* Première colonne = même fond que l’en-tête */
+.msg .bubble tbody td:first-child{
+  background:var(--hover);
+  font-weight:600;
+}
+
+/* Survol (hors 1re colonne) */
+.msg .bubble tbody tr:hover td{
+  background:var(--chip);
+}
+.msg .bubble tbody tr:hover td:first-child{
+  background:var(--hover);
+}
+
+/* Légende optionnelle */
+.msg .bubble table caption{
+  caption-side:top;
+  font-weight:600;
+  color:var(--muted);
+  padding-bottom:6px;
+  text-align:left;
+}
+
+/* ✅ Texte multi-lignes dans toutes les cellules (sans casser KaTeX) */
+.msg .bubble table th,
+.msg .bubble table td{
+  width:clamp(10.5rem, 12vw, 12rem); /* colonne lisible, mais encore scrollable si le tableau est large */
+  min-width:clamp(10.5rem, 12vw, 12rem);
+  white-space:normal;        /* autorise plusieurs lignes */
+  word-break:normal;         /* privilegie les retours sur les espaces */
+  overflow-wrap:break-word;  /* casse seulement en dernier recours */
+  hyphens:none;
+}
+
+/* Conserver le nowrap uniquement pour les formules KaTeX (rendu stable) */
+.msg .bubble .katex .base,
+.msg .bubble .katex-display > .katex{
+  white-space:nowrap !important;
+}
+
+/* Barre de défilement discrète sur la bulle (porteuse du scroll) */
+.msg .bubble{
+  scrollbar-width: thin;                                  /* Firefox */
+  scrollbar-color: rgba(255,255,255,.28) transparent;     /* Firefox */
+}
+.msg .bubble::-webkit-scrollbar{ height:6px; }            /* Chrome/Edge/Safari */
+.msg .bubble::-webkit-scrollbar-track{ background:transparent; }
+.msg .bubble::-webkit-scrollbar-thumb{
+  background: rgba(255,255,255,.28);
+  border-radius: 4px;
+}
+.msg .bubble:hover::-webkit-scrollbar-thumb{
+  background: rgba(255,255,255,.45);
+}
+
+
+.composer-attachments{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  margin-top:12px;
+}
+.composer-upload-error{
+  margin:10px 0 0;
+  color:#fca5a5;
+  font-size:.85rem;
+}
+.pending-attachment{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  min-width:260px;
+  max-width:100%;
+  padding:10px 12px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background:#0c131f;
+}
+:root[data-theme="light"] .pending-attachment{
+  background:var(--surface-card);
+}
+.pending-attachment.is-error{
+  border-color:rgba(248,113,113,.6);
+}
+.pending-attachment-thumb{
+  width:52px;
+  height:52px;
+  border-radius:12px;
+  overflow:hidden;
+  background:#111827;
+  border:1px solid var(--border);
+  display:grid;
+  place-items:center;
+  flex:0 0 auto;
+  color:var(--muted);
+  font-weight:700;
+  letter-spacing:.06em;
+  font-size:.78rem;
+}
+.pending-attachment-thumb img{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+}
+.pending-attachment-meta{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.pending-attachment-name{
+  font-weight:600;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.pending-attachment-info,
+.pending-attachment-status{
+  font-size:.82rem;
+  color:var(--muted);
+}
+.pending-attachment-remove{
+  margin-left:auto;
+  border:0;
+  background:transparent;
+  color:#fca5a5;
+  cursor:pointer;
+  font:inherit;
+}
+.pending-attachment-remove:disabled{
+  cursor:wait;
+  opacity:.7;
+}
+.message-attachments{
+  display:grid;
+  gap:10px;
+  margin-top:12px;
+}
+.attachment-card{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:12px;
+  border-radius:14px;
+  border:1px solid var(--border);
+  background:rgba(12,19,31,.9);
+  color:inherit;
+  text-decoration:none;
+}
+:root[data-theme="light"] .attachment-card{
+  background:var(--surface-card);
+}
+.attachment-card:hover{
+  background:rgba(17,24,39,.95);
+}
+.attachment-preview{
+  width:62px;
+  height:62px;
+  border-radius:14px;
+  overflow:hidden;
+  background:var(--surface-soft);
+  border:1px solid var(--border);
+  display:grid;
+  place-items:center;
+  flex:0 0 auto;
+  color:var(--muted);
+  font-weight:700;
+  letter-spacing:.06em;
+}
+.attachment-preview.is-image{
+  background:#111827;
+}
+.attachment-preview.is-file{
+  background:var(--surface-soft);
+  color:var(--muted);
+}
+.attachment-preview img{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+}
+.attachment-meta{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.attachment-name{
+  font-weight:600;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.attachment-detail,
+.attachment-kind{
+  font-size:.84rem;
+  color:var(--muted);
+}
