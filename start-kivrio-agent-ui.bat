@@ -5,8 +5,15 @@ set "PORT=8000"
 set "SERVER_EXE=%ROOT%\bin\kivrio-agent-ui-server.exe"
 set "SERVER_SRC=%ROOT%\server\KivrioAgentUiServer.cs"
 set "WAIT_SECONDS=30"
+set "NEED_COMPILE=0"
 
-if not exist "%SERVER_EXE%" (
+if not exist "%SERVER_EXE%" set "NEED_COMPILE=1"
+if "%NEED_COMPILE%"=="0" (
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "if ((Get-Item -LiteralPath '%SERVER_SRC%').LastWriteTimeUtc -gt (Get-Item -LiteralPath '%SERVER_EXE%').LastWriteTimeUtc) { exit 0 } exit 1" >nul 2>nul
+  if not errorlevel 1 set "NEED_COMPILE=1"
+)
+
+if "%NEED_COMPILE%"=="1" (
   call :compile_server
   if errorlevel 1 (
     pause
@@ -43,7 +50,7 @@ if not defined CSC (
   exit /b 1
 )
 if not exist "%ROOT%\bin" mkdir "%ROOT%\bin"
-"%CSC%" /nologo /target:winexe /platform:anycpu /optimize+ /out:"%SERVER_EXE%" /r:System.Web.Extensions.dll "%SERVER_SRC%"
+"%CSC%" /nologo /target:winexe /platform:anycpu /optimize+ /out:"%SERVER_EXE%" /r:System.Web.Extensions.dll /r:System.Net.WebSockets.dll /r:System.Net.WebSockets.Client.dll "%SERVER_SRC%"
 if errorlevel 1 (
   echo [ERREUR] Compilation du serveur autonome impossible.
   exit /b 1

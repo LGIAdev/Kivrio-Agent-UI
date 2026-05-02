@@ -348,7 +348,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   wirePromptModal();
   wireSettingsModal();
   wireSendAction();
-  mountStatusPill();
+  mountStatusPill({ authenticated: auth.authenticated });
   wireLogout();
   wireUploads();
   wireSidebarResize();

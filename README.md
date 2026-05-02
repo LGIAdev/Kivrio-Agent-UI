@@ -7,7 +7,7 @@ Kivrio Agent UI is a local interface for using Codex CLI more comfortably with l
 It provides a desktop-style web UI with math rendering, local conversation history, and a fully local persistence layer.
 
 Status: project under active development.
-Version: Kivrio Agent UI 2026.5.1.
+Version: Kivrio Agent UI 2026.5.2.
 
 ---
 
@@ -21,6 +21,7 @@ Standalone release notes will be added when the first dedicated Agent UI package
 ## Current features
 
 - Local Ollama integration
+- Codex CLI bridge in local OSS mode through Ollama
 - Dark/light theme support
 - Markdown rendering with KaTeX
 - Conversation history in the left sidebar
@@ -39,7 +40,9 @@ Kivrio Agent UI now runs as a local application made of:
 - a local autonomous Windows server
 - a local JSON conversation store
 - a browser UI served from the same local server
-- local Ollama models running outside Kivrio Agent UI
+- Codex CLI running as the local coding agent
+- Ollama running as the local inference server
+- local Ollama models running outside Kivrio Agent UI, with `gpt-oss:20b` as the default model
 - direct file reading for supported multimodal models
 
 Conversation data is stored locally in:
@@ -78,6 +81,18 @@ Then open:
 Make sure Ollama is installed locally and running, for example on:
 
 `http://127.0.0.1:11434`
+
+Kivrio Agent UI launches Codex through the Ollama integration. The target command shape is:
+
+```powershell
+ollama launch codex --model <local-ollama-model> -- app-server --listen ws://127.0.0.1:<port>
+```
+
+The default model is:
+
+```text
+gpt-oss:20b
+```
 
 For image files, Kivrio Agent UI keeps file upload support for compatible multimodal models.
 
@@ -135,7 +150,7 @@ Logging out of the interface no longer clears persistent conversation history.
 - [x] Sidebar rename/delete actions
 - [x] File uploads for supported multimodal models
 - [x] Local session authentication
-- [ ] Codex CLI local bridge
+- [x] Codex CLI local bridge through Ollama
 - [ ] Voice input/output
 
 ---

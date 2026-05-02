@@ -1,10 +1,14 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 
@@ -80,9 +84,9 @@ namespace KivrioAgentUi
         private readonly bool _sessionCookieSecure;
         private readonly int _sessionTtlSeconds;
         private readonly string _configuredAdminPassword;
+        private readonly CodexAgentBridge _agentBridge;
         private readonly object _sessionsLock = new object();
         private readonly Dictionary<string, DateTime> _sessions = new Dictionary<string, DateTime>();
-
         public LocalServer(string root, string host, int port)
         {
             _root = root;
@@ -95,6 +99,9 @@ namespace KivrioAgentUi
             _sessionCookieSecure = EnvFlag("KIVRO_COOKIE_SECURE", false);
             _sessionTtlSeconds = Math.Max(300, ReadIntEnv("KIVRO_SESSION_TTL_SECONDS", 43200));
             _configuredAdminPassword = (Environment.GetEnvironmentVariable("KIVRO_ADMIN_PASSWORD") ?? "").Trim();
+            _agentBridge = new CodexAgentBridge(root);
+            _agentBridge.StartInBackground();
+            AppDomain.CurrentDomain.ProcessExit += delegate { _agentBridge.Stop(); };
         }
 
         public void Run()
@@ -107,10 +114,18 @@ namespace KivrioAgentUi
 
             var listener = new TcpListener(address, _port);
             listener.Start();
-            while (true)
+            try
             {
-                TcpClient client = listener.AcceptTcpClient();
-                ThreadPool.QueueUserWorkItem(delegate { HandleClient(client); });
+                while (true)
+                {
+                    TcpClient client = listener.AcceptTcpClient();
+                    ThreadPool.QueueUserWorkItem(delegate { HandleClient(client); });
+                }
+            }
+            finally
+            {
+                try { listener.Stop(); } catch { }
+                try { _agentBridge.Stop(); } catch { }
             }
         }
 
@@ -224,12 +239,44 @@ namespace KivrioAgentUi
                 payload["ok"] = true;
                 HttpResponse response = Json(payload);
                 response.Headers["Set-Cookie"] = BuildSessionCookie("", true);
+                StopAgentAfterLogout();
                 return response;
             }
 
             if (!IsAuthenticated(request))
             {
                 return JsonError(HttpStatusCode.Unauthorized, "Authentication required.");
+            }
+
+            if (method == "GET" && path == "/api/agent/status")
+            {
+                return Json(_agentBridge.Status(true));
+            }
+
+            if (method == "GET" && path == "/api/agent/diagnostic")
+            {
+                return Json(_agentBridge.Diagnostic());
+            }
+
+            if (method == "POST" && path == "/api/agent/chat")
+            {
+                Dictionary<string, object> body = ReadJsonObject(request);
+                string prompt = GetBodyString(body, "prompt").Trim();
+                if (string.IsNullOrEmpty(prompt))
+                {
+                    return JsonError(HttpStatusCode.BadRequest, "Message vide.");
+                }
+
+                string systemPrompt = GetBodyString(body, "systemPrompt");
+                string model = GetBodyString(body, "model");
+                try
+                {
+                    return Json(_agentBridge.Chat(prompt, systemPrompt, model));
+                }
+                catch (Exception ex)
+                {
+                    return JsonError(HttpStatusCode.BadGateway, "Dialogue Codex CLI impossible: " + ex.Message);
+                }
             }
 
             if (method == "GET" && path == "/api/system-prompt")
@@ -329,6 +376,14 @@ namespace KivrioAgentUi
             return JsonError(HttpStatusCode.NotFound, "Endpoint introuvable.");
         }
 
+        private void StopAgentAfterLogout()
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try { _agentBridge.Stop(); } catch { }
+            });
+        }
+
         private HttpResponse RouteAttachment(HttpRequest request)
         {
             string[] parts = SplitPath(request.Path);
@@ -395,7 +450,11 @@ namespace KivrioAgentUi
             }
 
             byte[] body = request.Method == "HEAD" ? new byte[0] : File.ReadAllBytes(fullPath);
-            return new HttpResponse(HttpStatusCode.OK, MimeTypeFor(fullPath), body);
+            var response = new HttpResponse(HttpStatusCode.OK, MimeTypeFor(fullPath), body);
+            response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+            response.Headers["Pragma"] = "no-cache";
+            response.Headers["Expires"] = "0";
+            return response;
         }
 
         private static bool IsPublicStaticPath(string path)
@@ -945,6 +1004,1485 @@ namespace KivrioAgentUi
         }
     }
 
+    internal static class LocalAgentConfig
+    {
+        public const string Agent = "codex-cli";
+        public const string AgentLabel = "Codex CLI";
+        public const string Provider = "ollama";
+        public const string ProviderLabel = "Ollama";
+        public const string Mode = "ollama-launch";
+        public const string DefaultModel = "gpt-oss:20b";
+        public const string Channel = "Ollama launch Codex CLI/app-server";
+        public const string RefuseNonOssModeMessage = "Mode refuse : Codex CLI doit etre lance via ollama launch codex pour utiliser Ollama localement.";
+        public const string MissingModelMessage = "Aucun modele Ollama selectionne. Veuillez selectionner un modele local avant de lancer Codex CLI.";
+
+        public static string ReadProvider()
+        {
+            string provider = (Environment.GetEnvironmentVariable("KIVRIO_CODEX_LOCAL_PROVIDER") ?? Provider).Trim();
+            if (string.IsNullOrEmpty(provider)) provider = Provider;
+            if (!string.Equals(provider, Provider, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Seul le provider local Ollama est autorise.");
+            }
+            return Provider;
+        }
+
+        public static string ReadDefaultModel()
+        {
+            string model = (Environment.GetEnvironmentVariable("KIVRIO_CODEX_MODEL") ?? DefaultModel).Trim();
+            if (string.IsNullOrEmpty(model)) model = DefaultModel;
+            return NormalizeModel(model);
+        }
+
+        public static string NormalizeModel(string model)
+        {
+            string value = (model ?? "").Trim();
+            if (string.IsNullOrEmpty(value))
+            {
+                throw new InvalidOperationException(MissingModelMessage);
+            }
+            return value;
+        }
+    }
+
+    internal sealed class CodexAgentBridge
+    {
+        private const int DefaultPort = 17655;
+        private const int MaxPortScan = 40;
+        private readonly object _lock = new object();
+        private readonly object _chatLock = new object();
+        private readonly string _root;
+        private Process _process;
+        private string _launcherPath;
+        private string _codexPath;
+        private int _port;
+        private bool _attachedToExisting;
+        private string _lastError;
+        private string _processModel;
+        private DateTime? _startedAtUtc;
+
+        public CodexAgentBridge(string root)
+        {
+            _root = root;
+        }
+
+        public void Start()
+        {
+            Status(true);
+        }
+
+        public void StartInBackground()
+        {
+            ThreadPool.QueueUserWorkItem(delegate { Start(); });
+        }
+
+        public void Stop()
+        {
+            lock (_lock)
+            {
+                StopProcessLocked();
+            }
+        }
+
+        public Dictionary<string, object> Status(bool ensureStarted)
+        {
+            lock (_lock)
+            {
+                if (ensureStarted)
+                {
+                    EnsureStartedLocked();
+                }
+
+                bool ready = _port > 0 && ProbeHttp("http://127.0.0.1:" + _port + "/readyz", 500);
+                bool healthy = _port > 0 && ProbeHttp("http://127.0.0.1:" + _port + "/healthz", 500);
+                bool processRunning = _process != null && !_process.HasExited;
+
+                string mode = "missing";
+                if (ready || healthy)
+                {
+                    mode = _attachedToExisting ? "attached" : "owned";
+                }
+                else if (processRunning)
+                {
+                    mode = "starting";
+                }
+                else if (!string.IsNullOrEmpty(_lastError))
+                {
+                    mode = "error";
+                }
+
+                return new Dictionary<string, object>
+                {
+                    { "ok", true },
+                    { "agent", LocalAgentConfig.Agent },
+                    { "agentLabel", LocalAgentConfig.AgentLabel },
+                    { "provider", LocalAgentConfig.Provider },
+                    { "providerLabel", LocalAgentConfig.ProviderLabel },
+                    { "agentMode", LocalAgentConfig.Mode },
+                    { "defaultModel", LocalAgentConfig.DefaultModel },
+                    { "processModel", _processModel ?? "" },
+                    { "codexFound", !string.IsNullOrEmpty(_launcherPath) && File.Exists(_launcherPath) && !string.IsNullOrEmpty(_codexPath) && File.Exists(_codexPath) },
+                    { "ollamaFound", !string.IsNullOrEmpty(_launcherPath) && File.Exists(_launcherPath) },
+                    { "ollamaPath", _launcherPath ?? "" },
+                    { "codexPath", _codexPath ?? "" },
+                    { "mode", mode },
+                    { "running", ready || healthy || processRunning },
+                    { "ownedProcess", processRunning && !_attachedToExisting },
+                    { "attachedToExisting", _attachedToExisting },
+                    { "processId", processRunning ? _process.Id : 0 },
+                    { "port", _port },
+                    { "url", _port > 0 ? "ws://127.0.0.1:" + _port : "" },
+                    { "ready", ready },
+                    { "healthy", healthy },
+                    { "startedAt", _startedAtUtc.HasValue ? UnixTimeSeconds(_startedAtUtc.Value) : 0 },
+                    { "lastError", _lastError ?? "" }
+                };
+            }
+        }
+
+        public Dictionary<string, object> Diagnostic()
+        {
+            Dictionary<string, object> status = Status(true);
+            bool ready = status.ContainsKey("ready") && status["ready"] is bool && (bool)status["ready"];
+            bool healthy = status.ContainsKey("healthy") && status["healthy"] is bool && (bool)status["healthy"];
+
+            status["diagnostic"] = true;
+            status["channel"] = LocalAgentConfig.Channel;
+            status["effectiveModel"] = LocalAgentConfig.DefaultModel;
+            status["effectiveProvider"] = LocalAgentConfig.Provider;
+            status["agent"] = LocalAgentConfig.Agent;
+            status["agentLabel"] = LocalAgentConfig.AgentLabel;
+            status["providerLabel"] = LocalAgentConfig.ProviderLabel;
+            status["agentMode"] = LocalAgentConfig.Mode;
+            status["defaultModel"] = LocalAgentConfig.DefaultModel;
+            status["processModel"] = _processModel ?? "";
+            status["codexReady"] = ready;
+            status["codexHealthy"] = healthy;
+            status["source"] = "Kivrio Agent UI server";
+            return status;
+        }
+
+        public Dictionary<string, object> Chat(string prompt, string systemPrompt, string model)
+        {
+            string requestedModel = string.IsNullOrEmpty((model ?? "").Trim())
+                ? LocalAgentConfig.ReadDefaultModel()
+                : LocalAgentConfig.NormalizeModel(model);
+            int port;
+            lock (_lock)
+            {
+                EnsureStartedLocked(requestedModel);
+                if (_port <= 0)
+                {
+                    throw new InvalidOperationException(_lastError ?? "codex app-server indisponible.");
+                }
+                port = _port;
+            }
+
+            lock (_chatLock)
+            {
+                var client = new CodexAppServerClient(port, _root);
+                return client.RunTurn(prompt, systemPrompt, requestedModel);
+            }
+        }
+
+        private void EnsureStartedLocked()
+        {
+            EnsureStartedLocked(LocalAgentConfig.ReadDefaultModel());
+        }
+
+        private void EnsureStartedLocked(string model)
+        {
+            string selectedModel = LocalAgentConfig.NormalizeModel(model);
+            if (_port > 0 && ProbeHttp("http://127.0.0.1:" + _port + "/readyz", 500))
+            {
+                if (string.Equals(_processModel, selectedModel, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+                StopProcessLocked();
+            }
+
+            if (_process != null && !_process.HasExited)
+            {
+                if (string.Equals(_processModel, selectedModel, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+                StopProcessLocked();
+            }
+
+            _process = null;
+            _attachedToExisting = false;
+            _lastError = null;
+
+            _launcherPath = FindOllamaCommand();
+            if (string.IsNullOrEmpty(_launcherPath) || !File.Exists(_launcherPath))
+            {
+                _lastError = "Ollama introuvable.";
+                return;
+            }
+
+            _codexPath = FindCodexCommandForOllamaLaunch();
+            if (string.IsNullOrEmpty(_codexPath) || !File.Exists(_codexPath))
+            {
+                _lastError = "Codex CLI executable par Ollama introuvable.";
+                return;
+            }
+
+            int preferredPort = ReadPort();
+            if (EnvFlag("KIVRIO_AGENT_ATTACH_EXISTING", false)
+                && ProbeHttp("http://127.0.0.1:" + preferredPort + "/readyz", 500)
+                && ProbeHttp("http://127.0.0.1:" + preferredPort + "/healthz", 500))
+            {
+                _port = preferredPort;
+                _attachedToExisting = true;
+                _processModel = selectedModel;
+                return;
+            }
+
+            _port = FindAvailablePort(preferredPort);
+            if (_port <= 0)
+            {
+                _lastError = "Aucun port local disponible pour codex app-server.";
+                return;
+            }
+
+            try
+            {
+                ProcessStartInfo info = BuildStartInfo(_launcherPath, _codexPath, _port, _root, selectedModel);
+                _process = Process.Start(info);
+                _processModel = selectedModel;
+                _startedAtUtc = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                _process = null;
+                _processModel = null;
+                _lastError = "Demarrage de Codex CLI impossible: " + ex.Message;
+                return;
+            }
+
+            if (!WaitUntilReady(_port, _process, 8000))
+            {
+                if (_process != null && _process.HasExited)
+                {
+                    _lastError = "codex app-server s'est arrete pendant le demarrage.";
+                }
+                else
+                {
+                    _lastError = "codex app-server ne repond pas encore.";
+                }
+            }
+        }
+
+        private void StopProcessLocked()
+        {
+            if (_process == null || _process.HasExited)
+            {
+                _process = null;
+                _attachedToExisting = false;
+                _processModel = null;
+                _port = 0;
+                return;
+            }
+
+            try
+            {
+                KillProcessTree(_process.Id);
+                if (!_process.WaitForExit(2000))
+                {
+                    _process.Kill();
+                    _process.WaitForExit(2000);
+                }
+            }
+            catch
+            {
+            }
+            finally
+            {
+                _process = null;
+                _attachedToExisting = false;
+                _processModel = null;
+                _port = 0;
+            }
+        }
+
+        private static void KillProcessTree(int processId)
+        {
+            try
+            {
+                string taskkill = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "taskkill.exe");
+                if (!File.Exists(taskkill))
+                {
+                    return;
+                }
+                var info = new ProcessStartInfo
+                {
+                    FileName = taskkill,
+                    Arguments = "/PID " + processId + " /T /F",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using (Process process = Process.Start(info))
+                {
+                    if (process != null)
+                    {
+                        process.WaitForExit(2000);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static ProcessStartInfo BuildStartInfo(string ollamaPath, string codexPath, int port, string root, string model)
+        {
+            string arguments = BuildOllamaLaunchArguments(port, model);
+            var info = new ProcessStartInfo();
+
+            info.FileName = ollamaPath;
+            info.Arguments = arguments;
+
+            info.WorkingDirectory = Directory.Exists(root) ? root : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            info.UseShellExecute = false;
+            info.CreateNoWindow = true;
+            info.EnvironmentVariables["PATH"] = BuildOllamaLaunchPath(codexPath);
+            return info;
+        }
+
+        private static string BuildOllamaLaunchArguments(int port, string selectedModel)
+        {
+            var parts = new List<string>();
+            LocalAgentConfig.ReadProvider();
+            string model = LocalAgentConfig.NormalizeModel(selectedModel);
+            parts.Add("launch");
+            parts.Add("codex");
+            parts.Add("--model " + QuoteArg(model));
+            parts.Add("--yes");
+            parts.Add("--");
+            parts.Add("app-server --listen ws://127.0.0.1:" + port);
+            string arguments = string.Join(" ", parts.ToArray());
+            GuardOllamaLaunchArguments(arguments);
+            return arguments;
+        }
+
+        private static void GuardOllamaLaunchArguments(string arguments)
+        {
+            string value = " " + (arguments ?? "") + " ";
+            if (value.IndexOf(" launch ", StringComparison.OrdinalIgnoreCase) < 0
+                || value.IndexOf(" codex ", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                throw new InvalidOperationException(LocalAgentConfig.RefuseNonOssModeMessage);
+            }
+            if (value.IndexOf(" --model ", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                throw new InvalidOperationException(LocalAgentConfig.MissingModelMessage);
+            }
+            if (value.IndexOf(" -- ", StringComparison.OrdinalIgnoreCase) < 0
+                || value.IndexOf(" app-server ", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                throw new InvalidOperationException("Mode refuse : Kivrio Agent UI doit lancer Codex en app-server via Ollama.");
+            }
+        }
+
+        private static string GetCodexJsForWrapper(string codexWrapperPath)
+        {
+            string dir = Path.GetDirectoryName(codexWrapperPath) ?? "";
+            return Path.Combine(dir, "node_modules", "@openai", "codex", "bin", "codex.js");
+        }
+
+        private static string FindNodeExecutable(string preferredDir)
+        {
+            if (!string.IsNullOrEmpty(preferredDir))
+            {
+                string bundled = Path.Combine(preferredDir, "node.exe");
+                if (File.Exists(bundled)) return bundled;
+            }
+            return FindOnPath("node.exe");
+        }
+
+        private static string QuoteArg(string value)
+        {
+            return "\"" + (value ?? "").Replace("\"", "\\\"") + "\"";
+        }
+
+        private static string FindOllamaCommand()
+        {
+            string configured = (Environment.GetEnvironmentVariable("KIVRIO_OLLAMA_PATH") ?? "").Trim();
+            if (File.Exists(configured)) return configured;
+
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string[] candidates = new[]
+            {
+                Path.Combine(localAppData, "Programs", "Ollama", "ollama.exe"),
+                FindOnPath("ollama.exe")
+            };
+
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(candidates[i]) && File.Exists(candidates[i]))
+                {
+                    return candidates[i];
+                }
+            }
+            return null;
+        }
+
+        private static string FindCodexCommandForOllamaLaunch()
+        {
+            string configured = (Environment.GetEnvironmentVariable("KIVRIO_CODEX_PATH") ?? "").Trim();
+            if (File.Exists(configured)) return configured;
+
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+            string[] candidates = new[]
+            {
+                Path.Combine(userProfile, ".codex", ".sandbox-bin", "codex.exe"),
+                Path.Combine(appData, "npm", "codex.cmd"),
+                Path.Combine(localAppData, "OpenAI", "Codex", "bin", "codex.exe"),
+                FindOnPathOutsideWindowsApps("codex.cmd"),
+                FindOnPathOutsideWindowsApps("codex.exe"),
+                FindOnPathOutsideWindowsApps("codex")
+            };
+
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(candidates[i]) && File.Exists(candidates[i]))
+                {
+                    return candidates[i];
+                }
+            }
+            return null;
+        }
+
+        private static string BuildOllamaLaunchPath(string codexPath)
+        {
+            var dirs = new List<string>();
+            AddPathDir(dirs, Path.GetDirectoryName(codexPath));
+            AddPathDir(dirs, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", ".sandbox-bin"));
+            AddPathDir(dirs, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm"));
+            AddPathDir(dirs, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenAI", "Codex", "bin"));
+
+            string path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            string[] existing = path.Split(Path.PathSeparator);
+            for (int i = 0; i < existing.Length; i++)
+            {
+                AddPathDir(dirs, existing[i]);
+            }
+            return string.Join(Path.PathSeparator.ToString(), dirs.ToArray());
+        }
+
+        private static void AddPathDir(List<string> dirs, string dir)
+        {
+            string value = (dir ?? "").Trim().Trim('"');
+            if (string.IsNullOrEmpty(value) || !Directory.Exists(value))
+            {
+                return;
+            }
+            for (int i = 0; i < dirs.Count; i++)
+            {
+                if (string.Equals(dirs[i], value, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+            }
+            dirs.Add(value);
+        }
+
+        private static string FindOnPath(string fileName)
+        {
+            string path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            string[] dirs = path.Split(Path.PathSeparator);
+            for (int i = 0; i < dirs.Length; i++)
+            {
+                string dir = (dirs[i] ?? "").Trim().Trim('"');
+                if (string.IsNullOrEmpty(dir)) continue;
+                try
+                {
+                    string candidate = Path.Combine(dir, fileName);
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch
+                {
+                }
+            }
+            return null;
+        }
+
+        private static string FindOnPathOutsideWindowsApps(string fileName)
+        {
+            string path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            string[] dirs = path.Split(Path.PathSeparator);
+            for (int i = 0; i < dirs.Length; i++)
+            {
+                string dir = (dirs[i] ?? "").Trim().Trim('"');
+                if (string.IsNullOrEmpty(dir) || IsWindowsAppsPath(dir)) continue;
+                try
+                {
+                    string candidate = Path.Combine(dir, fileName);
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch
+                {
+                }
+            }
+            return null;
+        }
+
+        private static bool IsWindowsAppsPath(string path)
+        {
+            return (path ?? "").IndexOf("\\WindowsApps", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static int ReadPort()
+        {
+            string raw = Environment.GetEnvironmentVariable("KIVRIO_AGENT_CODEX_PORT");
+            int port;
+            if (int.TryParse(raw, out port) && port > 0 && port < 65536)
+            {
+                return port;
+            }
+            return DefaultPort;
+        }
+
+        private static bool EnvFlag(string name, bool fallback)
+        {
+            string value = (Environment.GetEnvironmentVariable(name) ?? "").Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(value)) return fallback;
+            return value == "1" || value == "true" || value == "yes" || value == "on";
+        }
+
+        private static int FindAvailablePort(int preferredPort)
+        {
+            for (int offset = 0; offset < MaxPortScan; offset++)
+            {
+                int port = preferredPort + offset;
+                if (port > 0 && port < 65536 && IsPortAvailable(port))
+                {
+                    return port;
+                }
+            }
+            return 0;
+        }
+
+        private static bool IsPortAvailable(int port)
+        {
+            TcpListener listener = null;
+            try
+            {
+                listener = new TcpListener(IPAddress.Loopback, port);
+                listener.Start();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (listener != null)
+                {
+                    try { listener.Stop(); } catch { }
+                }
+            }
+        }
+
+        private static bool WaitUntilReady(int port, Process process, int timeoutMs)
+        {
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (process != null && process.HasExited)
+                {
+                    return false;
+                }
+                if (ProbeHttp("http://127.0.0.1:" + port + "/readyz", 500)
+                    && ProbeHttp("http://127.0.0.1:" + port + "/healthz", 500))
+                {
+                    return true;
+                }
+                Thread.Sleep(250);
+            }
+            return false;
+        }
+
+        private static bool ProbeHttp(string url, int timeoutMs)
+        {
+            try
+            {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                request.Method = "GET";
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                {
+                    int code = (int)response.StatusCode;
+                    return code >= 200 && code < 300;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static long UnixTimeSeconds(DateTime value)
+        {
+            return (long)(value.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
+        }
+    }
+
+    internal sealed class CodexAppServerClient
+    {
+        private const int DefaultTurnTimeoutMs = 1200000;
+        private const int MinTurnTimeoutMs = 60000;
+        private const int MaxTurnTimeoutMs = 3600000;
+        private readonly int _port;
+        private readonly string _root;
+        private readonly JavaScriptSerializer _json;
+        private int _nextId;
+
+        public CodexAppServerClient(int port, string root)
+        {
+            _port = port;
+            _root = root;
+            _json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+        }
+
+        public Dictionary<string, object> RunTurn(string prompt, string systemPrompt, string model)
+        {
+            int turnTimeoutMs = ReadTurnTimeoutMs();
+            string codexTestRoot = GetCodexTestRoot();
+            string workspaceRoot = ResolveWorkspaceRoot(prompt, codexTestRoot);
+            object[] writableRoots = BuildWritableRoots(workspaceRoot, codexTestRoot);
+            bool useExecutableSandbox = SamePath(workspaceRoot, codexTestRoot);
+
+            using (var socket = new ClientWebSocket())
+            using (var timeout = new CancellationTokenSource(turnTimeoutMs))
+            {
+                try
+                {
+                    socket.ConnectAsync(new Uri("ws://127.0.0.1:" + _port), timeout.Token).GetAwaiter().GetResult();
+                    Initialize(socket, timeout.Token);
+
+                    string requestedModel = NormalizeSelectedLocalModel(model);
+                    string requestedProvider = LocalAgentConfig.ReadProvider();
+                    Dictionary<string, object> thread = Request(socket, "thread/start", BuildThreadParams(systemPrompt, requestedModel, requestedProvider, workspaceRoot, codexTestRoot, writableRoots, useExecutableSandbox), timeout.Token, null);
+                    string threadId = GetNestedString(thread, "thread", "id");
+                    if (string.IsNullOrEmpty(threadId))
+                    {
+                        throw new InvalidOperationException("thread/start n'a pas retourne d'identifiant de thread.");
+                    }
+
+                    string effectiveModel = NormalizeEffectiveModel(GetString(thread, "model"), requestedModel);
+                    string effectiveProvider = NormalizeEffectiveProvider(GetString(thread, "modelProvider"), requestedProvider);
+
+                    var capture = new CodexTurnCapture(threadId, workspaceRoot, writableRoots, useExecutableSandbox);
+                    Dictionary<string, object> turn = Request(socket, "turn/start", BuildTurnParams(threadId, BuildPromptForTurn(prompt), requestedModel, requestedProvider, workspaceRoot, writableRoots, useExecutableSandbox), timeout.Token, capture);
+                    string turnId = GetNestedString(turn, "turn", "id");
+                    if (!string.IsNullOrEmpty(turnId))
+                    {
+                        capture.TurnId = turnId;
+                    }
+
+                    while (!capture.Completed)
+                    {
+                        Dictionary<string, object> message = ReceiveJson(socket, timeout.Token);
+                        HandleIncoming(socket, message, timeout.Token, capture);
+                    }
+
+                    string answer = capture.Answer.ToString().Trim();
+                    string reasoning = capture.Reasoning.ToString().Trim();
+                    if (string.IsNullOrEmpty(answer) && !string.IsNullOrEmpty(capture.CompletedAgentMessage))
+                    {
+                        answer = capture.CompletedAgentMessage.Trim();
+                    }
+                    if (string.IsNullOrEmpty(reasoning) && !string.IsNullOrEmpty(capture.CompletedReasoning))
+                    {
+                        reasoning = capture.CompletedReasoning.Trim();
+                    }
+                    if (capture.ToolNotes.Length > 0)
+                    {
+                        if (!string.IsNullOrEmpty(reasoning)) reasoning += "\n\n";
+                        reasoning += capture.ToolNotes.ToString().Trim();
+                    }
+                    if (string.IsNullOrEmpty(answer) && !string.IsNullOrEmpty(capture.Error))
+                    {
+                        throw new InvalidOperationException(capture.Error);
+                    }
+                    if (string.IsNullOrEmpty(answer))
+                    {
+                        answer = "Codex CLI n'a pas retourne de texte.";
+                    }
+
+                    return new Dictionary<string, object>
+                    {
+                        { "ok", true },
+                        { "answer", answer },
+                        { "reasoning", reasoning },
+                        { "threadId", threadId },
+                        { "turnId", capture.TurnId ?? "" },
+                        { "model", effectiveModel },
+                        { "provider", effectiveProvider },
+                        { "agent", LocalAgentConfig.Agent },
+                        { "agentLabel", LocalAgentConfig.AgentLabel },
+                        { "providerLabel", LocalAgentConfig.ProviderLabel },
+                        { "agentMode", LocalAgentConfig.Mode },
+                        { "requestedModel", requestedModel },
+                        { "effectiveModel", effectiveModel },
+                        { "requestedProvider", requestedProvider },
+                        { "effectiveProvider", effectiveProvider }
+                    };
+                }
+                catch (OperationCanceledException ex)
+                {
+                    throw new TimeoutException("Temps maximal depasse pendant la reponse Codex/Ollama (" + (turnTimeoutMs / 1000) + " secondes).", ex);
+                }
+            }
+        }
+
+        private static int ReadTurnTimeoutMs()
+        {
+            string secondsValue = (Environment.GetEnvironmentVariable("KIVRIO_CODEX_TURN_TIMEOUT_SECONDS") ?? "").Trim();
+            int seconds;
+            if (int.TryParse(secondsValue, out seconds) && seconds > 0)
+            {
+                return Clamp(seconds * 1000, MinTurnTimeoutMs, MaxTurnTimeoutMs);
+            }
+
+            string msValue = (Environment.GetEnvironmentVariable("KIVRIO_CODEX_TURN_TIMEOUT_MS") ?? "").Trim();
+            int milliseconds;
+            if (int.TryParse(msValue, out milliseconds) && milliseconds > 0)
+            {
+                return Clamp(milliseconds, MinTurnTimeoutMs, MaxTurnTimeoutMs);
+            }
+
+            return DefaultTurnTimeoutMs;
+        }
+
+        private static int Clamp(int value, int min, int max)
+        {
+            if (value < min) return min;
+            if (value > max) return max;
+            return value;
+        }
+
+        private void Initialize(ClientWebSocket socket, CancellationToken token)
+        {
+            var clientInfo = new Dictionary<string, object>
+            {
+                { "name", "kivrio-agent-ui" },
+                { "title", "Kivrio Agent UI" },
+                { "version", "2026.5.2" }
+            };
+            var capabilities = new Dictionary<string, object>
+            {
+                { "experimentalApi", true }
+            };
+            var parameters = new Dictionary<string, object>
+            {
+                { "clientInfo", clientInfo },
+                { "capabilities", capabilities }
+            };
+
+            Request(socket, "initialize", parameters, token, null);
+            SendJson(socket, new Dictionary<string, object> { { "method", "initialized" } }, token);
+        }
+
+        private string ResolveWorkspaceRoot(string prompt, string codexTestRoot)
+        {
+            if (PromptTargetsCodexTest(prompt, codexTestRoot))
+            {
+                Directory.CreateDirectory(codexTestRoot);
+                return codexTestRoot;
+            }
+            return _root;
+        }
+
+        private static bool PromptTargetsCodexTest(string prompt, string codexTestRoot)
+        {
+            string value = (prompt ?? "").ToLowerInvariant();
+            string normalizedRoot = (codexTestRoot ?? "").ToLowerInvariant();
+            return value.Contains("codexcli-test")
+                || value.Contains("codexcli test")
+                || (!string.IsNullOrEmpty(normalizedRoot) && value.Contains(normalizedRoot));
+        }
+
+        private static object[] BuildWritableRoots(string workspaceRoot, string codexTestRoot)
+        {
+            var roots = new List<object>();
+            AddUniqueRoot(roots, workspaceRoot);
+            AddUniqueRoot(roots, codexTestRoot);
+            return roots.ToArray();
+        }
+
+        private static void AddUniqueRoot(List<object> roots, string path)
+        {
+            string normalized = NormalizeFullPath(path);
+            if (string.IsNullOrEmpty(normalized)) return;
+            foreach (object existing in roots)
+            {
+                if (SamePath(Convert.ToString(existing), normalized)) return;
+            }
+            roots.Add(normalized);
+        }
+
+        private Dictionary<string, object> BuildThreadParams(string systemPrompt, string model, string provider, string workspaceRoot, string codexTestRoot, object[] writableRoots, bool useExecutableSandbox)
+        {
+            var parameters = new Dictionary<string, object>
+            {
+                { "cwd", workspaceRoot },
+                { "approvalPolicy", "on-request" },
+                { "sandbox", useExecutableSandbox ? "danger-full-access" : "workspace-write" },
+                { "config", BuildThreadConfig(writableRoots) },
+                { "ephemeral", true },
+                { "experimentalRawEvents", false },
+                { "persistExtendedHistory", false },
+                { "developerInstructions", BuildDeveloperInstructions(systemPrompt, model, _root, codexTestRoot, workspaceRoot) }
+            };
+            parameters["model"] = model;
+            parameters["modelProvider"] = provider;
+            return parameters;
+        }
+
+        private static Dictionary<string, object> BuildThreadConfig(object[] writableRoots)
+        {
+            return new Dictionary<string, object>
+            {
+                {
+                    "sandbox_workspace_write",
+                    new Dictionary<string, object>
+                    {
+                        { "network_access", false },
+                        { "writable_roots", writableRoots }
+                    }
+                }
+            };
+        }
+
+        private static Dictionary<string, object> BuildSandboxPolicy(object[] writableRoots, bool useExecutableSandbox)
+        {
+            if (useExecutableSandbox)
+            {
+                return new Dictionary<string, object>
+                {
+                    { "type", "dangerFullAccess" }
+                };
+            }
+
+            return new Dictionary<string, object>
+            {
+                { "type", "workspaceWrite" },
+                { "networkAccess", false },
+                { "writableRoots", writableRoots },
+                { "readOnlyAccess", new Dictionary<string, object> { { "type", "fullAccess" } } }
+            };
+        }
+
+        private static string GetCodexTestRoot()
+        {
+            string documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            if (string.IsNullOrWhiteSpace(documents))
+            {
+                documents = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Documents");
+            }
+            return Path.Combine(documents, "CodexCLI-Test");
+        }
+
+        private static string BuildDeveloperInstructions(string systemPrompt, string model, string root, string codexTestRoot, string workspaceRoot)
+        {
+            var builder = new StringBuilder();
+            builder.Append("Tu reponds dans Kivrio Agent UI via Codex CLI. ");
+            builder.Append("Le dossier de travail effectif de ce tour est ");
+            builder.Append(workspaceRoot);
+            builder.Append(". ");
+            builder.Append("Quand l'utilisateur mentionne Documents > Kivrio Agent UI, il designe le dossier de travail local ");
+            builder.Append(root);
+            builder.Append(". ");
+            builder.Append("Quand l'utilisateur mentionne Documents > CodexCLI-Test, il designe le dossier de test local ");
+            builder.Append(codexTestRoot);
+            builder.Append(". ");
+            builder.Append("Le canal est Codex CLI/app-server, l'agent est Codex CLI, le provider local est Ollama et le modele local selectionne est ");
+            builder.Append(LocalAgentConfig.NormalizeModel(model));
+            builder.Append(". ");
+            builder.Append("Reponds toujours en francais, sauf si l'utilisateur demande explicitement une autre langue. ");
+            builder.Append("Les explications, diagnostics, plans et messages visibles doivent etre en francais. ");
+            builder.Append("Par defaut, reste consultatif: propose un plan court et attends un accord explicite avant toute modification. ");
+            builder.Append("Si le dernier message utilisateur contient un accord explicite comme 'accord', 'je confirme' ou 'vas-y', tu peux executer uniquement le plan immediatement precedent visible dans le contexte de conversation. ");
+            builder.Append("Ne modifie que le dossier ou le fichier explicitement cible par l'utilisateur. ");
+            builder.Append("Ne modifie jamais le dossier Kivrio Agent UI sauf si l'utilisateur le demande explicitement comme dossier cible. ");
+            builder.Append("Pour une creation ou un test hors projet, utilise Documents > CodexCLI-Test uniquement si l'utilisateur l'a nomme explicitement. ");
+            builder.Append("Si le fichier ou le dossier cible n'est pas clair, demande une clarification au lieu d'agir. ");
+            builder.Append("N'installe aucune dependance et ne lance aucun build sans accord explicite. ");
+            builder.Append("Apres action, resume les fichiers crees ou modifies.");
+            string custom = (systemPrompt ?? "").Trim();
+            if (!string.IsNullOrEmpty(custom))
+            {
+                builder.Append("\n\nInstructions utilisateur de Kivrio Agent UI:\n");
+                builder.Append(custom);
+            }
+            return builder.ToString();
+        }
+
+        private static string BuildPromptForTurn(string prompt)
+        {
+            var builder = new StringBuilder();
+            builder.AppendLine("Consigne Kivrio Agent UI:");
+            builder.AppendLine("Reponds en francais. N'utilise l'anglais que si l'utilisateur le demande explicitement.");
+            builder.AppendLine();
+            builder.AppendLine("Message utilisateur:");
+            builder.Append(prompt ?? "");
+            return builder.ToString();
+        }
+
+        private static Dictionary<string, object> BuildTurnParams(string threadId, string prompt, string model, string provider, string workspaceRoot, object[] writableRoots, bool useExecutableSandbox)
+        {
+            var inputItem = new Dictionary<string, object>
+            {
+                { "type", "text" },
+                { "text", prompt ?? "" },
+                { "text_elements", new object[0] }
+            };
+            var parameters = new Dictionary<string, object>
+            {
+                { "threadId", threadId },
+                { "cwd", workspaceRoot },
+                { "input", new object[] { inputItem } },
+                { "approvalPolicy", "on-request" },
+                { "sandboxPolicy", BuildSandboxPolicy(writableRoots, useExecutableSandbox) },
+                { "model", model },
+                { "modelProvider", provider }
+            };
+            return parameters;
+        }
+
+        private static string NormalizeSelectedLocalModel(string model)
+        {
+            string value = (model ?? "").Trim();
+            if (string.IsNullOrEmpty(value))
+            {
+                value = LocalAgentConfig.ReadDefaultModel();
+            }
+            return LocalAgentConfig.NormalizeModel(value);
+        }
+
+        private static string NormalizeEffectiveModel(string value, string fallback)
+        {
+            string model = (value ?? "").Trim();
+            if (string.IsNullOrEmpty(model)) model = fallback;
+            if (!string.Equals(model, fallback, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Modele Codex inattendu: " + model);
+            }
+            return fallback;
+        }
+
+        private static string NormalizeEffectiveProvider(string value, string fallback)
+        {
+            string provider = (value ?? "").Trim();
+            if (string.IsNullOrEmpty(provider)) provider = fallback;
+            if (!string.Equals(provider, LocalAgentConfig.Provider, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Provider Codex inattendu: " + provider);
+            }
+            return LocalAgentConfig.Provider;
+        }
+
+        private Dictionary<string, object> Request(ClientWebSocket socket, string method, Dictionary<string, object> parameters, CancellationToken token, CodexTurnCapture capture)
+        {
+            int id = Interlocked.Increment(ref _nextId);
+            var request = new Dictionary<string, object>
+            {
+                { "id", id },
+                { "method", method },
+                { "params", parameters ?? new Dictionary<string, object>() }
+            };
+            SendJson(socket, request, token);
+
+            while (true)
+            {
+                Dictionary<string, object> message = ReceiveJson(socket, token);
+                object responseId;
+                if (message.TryGetValue("id", out responseId) && SameId(responseId, id))
+                {
+                    object error;
+                    if (message.TryGetValue("error", out error))
+                    {
+                        throw new InvalidOperationException(JsonRpcErrorMessage(error));
+                    }
+
+                    object result;
+                    if (message.TryGetValue("result", out result))
+                    {
+                        return AsDictionary(result);
+                    }
+                    return new Dictionary<string, object>();
+                }
+
+                HandleIncoming(socket, message, token, capture);
+            }
+        }
+
+        private void HandleIncoming(ClientWebSocket socket, Dictionary<string, object> message, CancellationToken token, CodexTurnCapture capture)
+        {
+            string method = GetString(message, "method");
+            if (string.IsNullOrEmpty(method))
+            {
+                return;
+            }
+
+            object requestId;
+            if (message.TryGetValue("id", out requestId))
+            {
+                Dictionary<string, object> requestParameters = AsDictionary(GetObject(message, "params"));
+                SendJson(socket, BuildServerRequestResponse(requestId, method, requestParameters, capture), token);
+                return;
+            }
+
+            if (capture == null)
+            {
+                return;
+            }
+
+            Dictionary<string, object> parameters = AsDictionary(GetObject(message, "params"));
+            if (method == "item/agentMessage/delta")
+            {
+                capture.Answer.Append(GetString(parameters, "delta"));
+                return;
+            }
+            if (method == "item/reasoning/textDelta" || method == "item/reasoning/summaryTextDelta")
+            {
+                capture.Reasoning.Append(GetString(parameters, "delta"));
+                return;
+            }
+            if (method == "item/completed")
+            {
+                CaptureCompletedItem(capture, parameters);
+                return;
+            }
+            if (method == "turn/completed")
+            {
+                capture.Completed = true;
+                capture.Error = ExtractTurnError(parameters);
+            }
+        }
+
+        private static Dictionary<string, object> BuildServerRequestResponse(object requestId, string method, Dictionary<string, object> parameters, CodexTurnCapture capture)
+        {
+            if (method == "item/commandExecution/requestApproval")
+            {
+                bool approved = IsSafeCommandApproval(parameters, capture);
+                return new Dictionary<string, object>
+                {
+                    { "id", requestId },
+                    { "result", new Dictionary<string, object> { { "decision", approved ? "accept" : "decline" } } }
+                };
+            }
+            if (method == "item/fileChange/requestApproval")
+            {
+                bool approved = IsSafeFileChangeApproval(parameters, capture);
+                return new Dictionary<string, object>
+                {
+                    { "id", requestId },
+                    { "result", new Dictionary<string, object> { { "decision", approved ? "accept" : "decline" } } }
+                };
+            }
+            if (method == "item/permissions/requestApproval")
+            {
+                return new Dictionary<string, object>
+                {
+                    { "id", requestId },
+                    { "result", new Dictionary<string, object>
+                        {
+                            { "permissions", BuildGrantedPermissions(parameters, capture) },
+                            { "scope", "turn" }
+                        }
+                    }
+                };
+            }
+
+            return new Dictionary<string, object>
+            {
+                { "id", requestId },
+                { "error", new Dictionary<string, object>
+                    {
+                        { "code", -32601 },
+                        { "message", "Methode non prise en charge par Kivrio Agent UI: " + method }
+                    }
+                }
+            };
+        }
+
+        private static bool IsSafeCommandApproval(Dictionary<string, object> parameters, CodexTurnCapture capture)
+        {
+            if (capture == null) return false;
+            if (capture.AllowExecutableSandbox && !IsPathUnderAnyRoot(capture.WorkspaceRoot, capture.WritableRoots))
+            {
+                return false;
+            }
+
+            string cwd = GetString(parameters, "cwd");
+            if (string.IsNullOrWhiteSpace(cwd))
+            {
+                cwd = capture.WorkspaceRoot;
+            }
+            if (!IsPathUnderAnyRoot(cwd, capture.WritableRoots))
+            {
+                return false;
+            }
+
+            string command = GetString(parameters, "command");
+            if (CommandContainsParentTraversal(command))
+            {
+                return false;
+            }
+            return CommandAbsolutePathsAreAllowed(command, capture.WritableRoots);
+        }
+
+        private static bool IsSafeFileChangeApproval(Dictionary<string, object> parameters, CodexTurnCapture capture)
+        {
+            if (capture == null) return false;
+            string grantRoot = GetString(parameters, "grantRoot");
+            if (string.IsNullOrWhiteSpace(grantRoot))
+            {
+                return IsPathUnderAnyRoot(capture.WorkspaceRoot, capture.WritableRoots);
+            }
+            return IsPathUnderAnyRoot(grantRoot, capture.WritableRoots);
+        }
+
+        private static Dictionary<string, object> BuildGrantedPermissions(Dictionary<string, object> parameters, CodexTurnCapture capture)
+        {
+            var granted = new Dictionary<string, object>();
+            if (capture == null)
+            {
+                return granted;
+            }
+
+            Dictionary<string, object> requested = AsDictionary(GetObject(parameters, "permissions"));
+            Dictionary<string, object> fileSystem = AsDictionary(GetObject(requested, "fileSystem"));
+            var fileSystemGrant = new Dictionary<string, object>();
+
+            object[] requestedWrites = FilterAllowedPaths(GetObject(fileSystem, "write"), capture.WritableRoots);
+            if (requestedWrites.Length > 0)
+            {
+                fileSystemGrant["write"] = requestedWrites;
+            }
+
+            object[] requestedReads = FilterAllowedPaths(GetObject(fileSystem, "read"), capture.WritableRoots);
+            if (requestedReads.Length > 0)
+            {
+                fileSystemGrant["read"] = requestedReads;
+            }
+
+            if (fileSystemGrant.Count > 0)
+            {
+                granted["fileSystem"] = fileSystemGrant;
+            }
+            return granted;
+        }
+
+        private static object[] FilterAllowedPaths(object value, object[] allowedRoots)
+        {
+            var granted = new List<object>();
+            foreach (string path in StringListFromObject(value))
+            {
+                if (IsPathUnderAnyRoot(path, allowedRoots))
+                {
+                    AddUniqueRoot(granted, path);
+                }
+            }
+            return granted.ToArray();
+        }
+
+        private static List<string> StringListFromObject(object value)
+        {
+            var values = new List<string>();
+            if (value == null) return values;
+            string text = value as string;
+            if (text != null)
+            {
+                if (!string.IsNullOrWhiteSpace(text)) values.Add(text);
+                return values;
+            }
+
+            var enumerable = value as IEnumerable;
+            if (enumerable == null) return values;
+            foreach (object item in enumerable)
+            {
+                string itemText = item == null ? "" : Convert.ToString(item);
+                if (!string.IsNullOrWhiteSpace(itemText)) values.Add(itemText);
+            }
+            return values;
+        }
+
+        private static bool CommandAbsolutePathsAreAllowed(string command, object[] allowedRoots)
+        {
+            string value = command ?? "";
+            foreach (Match match in Regex.Matches(value, "[\"']([A-Za-z]:\\\\[^\"']+)[\"']"))
+            {
+                if (!IsPathUnderAnyRoot(match.Groups[1].Value, allowedRoots))
+                {
+                    return false;
+                }
+            }
+            foreach (Match match in Regex.Matches(value, "\\b[A-Za-z]:\\\\[^\\s\"']+"))
+            {
+                if (!IsPathUnderAnyRoot(match.Value, allowedRoots))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static bool CommandContainsParentTraversal(string command)
+        {
+            string value = command ?? "";
+            return Regex.IsMatch(value, @"(^|[\s""'])\.\.(\\|/)");
+        }
+
+        private static bool IsPathUnderAnyRoot(string path, object[] allowedRoots)
+        {
+            string normalizedPath = NormalizeFullPath(path);
+            if (string.IsNullOrEmpty(normalizedPath)) return false;
+            foreach (object root in allowedRoots ?? new object[0])
+            {
+                string normalizedRoot = NormalizeFullPath(Convert.ToString(root));
+                if (string.IsNullOrEmpty(normalizedRoot)) continue;
+                if (SamePath(normalizedPath, normalizedRoot)) return true;
+                string rootWithSlash = normalizedRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                if (normalizedPath.StartsWith(rootWithSlash, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
+        private static string NormalizeFullPath(string path)
+        {
+            string value = (path ?? "").Trim().Trim('"', '\'');
+            if (string.IsNullOrEmpty(value)) return "";
+            try
+            {
+                return Path.GetFullPath(value);
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static bool SamePath(string left, string right)
+        {
+            string a = NormalizeFullPath(left);
+            string b = NormalizeFullPath(right);
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+            return string.Equals(
+                a.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                b.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void CaptureCompletedItem(CodexTurnCapture capture, Dictionary<string, object> parameters)
+        {
+            Dictionary<string, object> item = AsDictionary(GetObject(parameters, "item"));
+            string type = GetString(item, "type");
+            if (type == "agentMessage")
+            {
+                string text = GetString(item, "text");
+                if (!string.IsNullOrEmpty(text))
+                {
+                    capture.CompletedAgentMessage = text;
+                }
+            }
+            else if (type == "reasoning")
+            {
+                string text = JoinStringValues(GetObject(item, "content"));
+                if (string.IsNullOrEmpty(text))
+                {
+                    text = JoinStringValues(GetObject(item, "summary"));
+                }
+                if (!string.IsNullOrEmpty(text))
+                {
+                    capture.CompletedReasoning = text;
+                }
+            }
+            else if (type == "commandExecution")
+            {
+                string status = GetString(item, "status");
+                string command = GetString(item, "command");
+                string output = GetString(item, "aggregatedOutput");
+                object exitValue = GetObject(item, "exitCode");
+                string exitText = exitValue == null ? "" : Convert.ToString(exitValue);
+                bool failed = string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
+                    || (!string.IsNullOrEmpty(exitText) && exitText != "0");
+                if (failed)
+                {
+                    if (capture.ToolNotes.Length > 0) capture.ToolNotes.AppendLine();
+                    capture.ToolNotes.Append("Commande Codex echouee");
+                    if (!string.IsNullOrEmpty(exitText)) capture.ToolNotes.Append(" (exit ").Append(exitText).Append(")");
+                    if (!string.IsNullOrEmpty(command)) capture.ToolNotes.Append(": ").Append(command);
+                    if (!string.IsNullOrEmpty(output)) capture.ToolNotes.AppendLine().Append(output.Trim());
+                }
+            }
+            else if (type == "fileChange")
+            {
+                string status = GetString(item, "status");
+                if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (capture.ToolNotes.Length > 0) capture.ToolNotes.AppendLine();
+                    capture.ToolNotes.Append("Modification de fichier Codex echouee.");
+                }
+            }
+        }
+
+        private static string ExtractTurnError(Dictionary<string, object> parameters)
+        {
+            Dictionary<string, object> turn = AsDictionary(GetObject(parameters, "turn"));
+            string status = GetString(turn, "status");
+            Dictionary<string, object> error = AsDictionary(GetObject(turn, "error"));
+            string message = GetString(error, "message");
+            if (!string.IsNullOrEmpty(message))
+            {
+                return message;
+            }
+            string code = GetString(error, "code");
+            if (!string.IsNullOrEmpty(code))
+            {
+                return code;
+            }
+            if (status == "failed")
+            {
+                return "Le tour Codex CLI a echoue.";
+            }
+            return "";
+        }
+
+        private void SendJson(ClientWebSocket socket, Dictionary<string, object> payload, CancellationToken token)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(_json.Serialize(payload));
+            socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, token).GetAwaiter().GetResult();
+        }
+
+        private Dictionary<string, object> ReceiveJson(ClientWebSocket socket, CancellationToken token)
+        {
+            byte[] buffer = new byte[8192];
+            using (var output = new MemoryStream())
+            {
+                WebSocketReceiveResult result;
+                do
+                {
+                    result = socket.ReceiveAsync(new ArraySegment<byte>(buffer), token).GetAwaiter().GetResult();
+                    if (result.MessageType == WebSocketMessageType.Close)
+                    {
+                        throw new InvalidOperationException("Connexion Codex CLI fermee.");
+                    }
+                    output.Write(buffer, 0, result.Count);
+                }
+                while (!result.EndOfMessage);
+
+                string text = Encoding.UTF8.GetString(output.ToArray());
+                object parsed = _json.DeserializeObject(text);
+                return AsDictionary(parsed);
+            }
+        }
+
+        private static bool SameId(object value, int expected)
+        {
+            if (value is int) return (int)value == expected;
+            if (value is long) return (long)value == expected;
+            string text = Convert.ToString(value);
+            int number;
+            return int.TryParse(text, out number) && number == expected;
+        }
+
+        private static string JsonRpcErrorMessage(object error)
+        {
+            Dictionary<string, object> dict = AsDictionary(error);
+            string message = GetString(dict, "message");
+            if (!string.IsNullOrEmpty(message))
+            {
+                return message;
+            }
+            return "Erreur JSON-RPC Codex CLI.";
+        }
+
+        private static object GetObject(Dictionary<string, object> dict, string key)
+        {
+            object value;
+            return dict != null && dict.TryGetValue(key, out value) ? value : null;
+        }
+
+        private static string GetString(Dictionary<string, object> dict, string key)
+        {
+            object value = GetObject(dict, key);
+            return value == null ? "" : Convert.ToString(value);
+        }
+
+        private static string GetNestedString(Dictionary<string, object> dict, string first, string second)
+        {
+            return GetString(AsDictionary(GetObject(dict, first)), second);
+        }
+
+        private static Dictionary<string, object> AsDictionary(object value)
+        {
+            var dict = value as Dictionary<string, object>;
+            return dict ?? new Dictionary<string, object>();
+        }
+
+        private static string JoinStringValues(object value)
+        {
+            if (value == null)
+            {
+                return "";
+            }
+            string text = value as string;
+            if (text != null)
+            {
+                return text;
+            }
+            var enumerable = value as IEnumerable;
+            if (enumerable == null)
+            {
+                return Convert.ToString(value);
+            }
+
+            var builder = new StringBuilder();
+            foreach (object item in enumerable)
+            {
+                if (item == null) continue;
+                if (builder.Length > 0) builder.Append("\n");
+                builder.Append(Convert.ToString(item));
+            }
+            return builder.ToString();
+        }
+    }
+
+    internal sealed class CodexTurnCapture
+    {
+        public readonly string ThreadId;
+        public readonly string WorkspaceRoot;
+        public readonly object[] WritableRoots;
+        public readonly bool AllowExecutableSandbox;
+        public readonly StringBuilder Answer = new StringBuilder();
+        public readonly StringBuilder Reasoning = new StringBuilder();
+        public readonly StringBuilder ToolNotes = new StringBuilder();
+        public string TurnId;
+        public bool Completed;
+        public string Error;
+        public string CompletedAgentMessage;
+        public string CompletedReasoning;
+
+        public CodexTurnCapture(string threadId, string workspaceRoot, object[] writableRoots, bool allowExecutableSandbox)
+        {
+            ThreadId = threadId;
+            WorkspaceRoot = workspaceRoot;
+            WritableRoots = writableRoots ?? new object[0];
+            AllowExecutableSandbox = allowExecutableSandbox;
+        }
+    }
+
     internal sealed class HttpResponse
     {
         public readonly HttpStatusCode StatusCode;
@@ -992,6 +2530,7 @@ namespace KivrioAgentUi
             if (status == HttpStatusCode.NotFound) return "Not Found";
             if (status == HttpStatusCode.MethodNotAllowed) return "Method Not Allowed";
             if (status == HttpStatusCode.Gone) return "Gone";
+            if (status == HttpStatusCode.BadGateway) return "Bad Gateway";
             if (status == HttpStatusCode.InternalServerError) return "Internal Server Error";
             return status.ToString();
         }

@@ -12,12 +12,15 @@ import {
   restorePendingUploads,
 } from '../features/uploads.js';
 import {
+  getAgentDiagnostic,
   getSystemPrompt,
   saveSystemPrompt,
+  sendAgentChat,
   uploadConversationAttachments,
 } from './conversationsApi.js';
 
 const LS = { base: 'ollamaBase', model: 'ollamaModel' };
+const DEFAULT_MODEL = 'gpt-oss:20b';
 const THINK_START_TAG = '<think>';
 const THINK_END_TAG = '</think>';
 const CHAT_REASONING_PATHS = [
@@ -52,6 +55,55 @@ let systemPromptLoadPromise = null;
 const getRaw = (k) => { try { return localStorage.getItem(k); } catch (_) { return null; } };
 const setLS = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
 
+function readSettingsModel() {
+  try {
+    const raw = localStorage.getItem('kivrio_settings_v1')
+      || localStorage.getItem('kivro_settings_v1')
+      || '';
+    if (!raw) return '';
+    const data = JSON.parse(raw);
+    return String(data?.model || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function readSelectorModel() {
+  try {
+    const selector = document.querySelector('#model-select');
+    if (!(selector instanceof HTMLSelectElement)) return '';
+    const selectedValue = String(selector.value || '').trim();
+    if (selectedValue) return selectedValue;
+    const selectedOption = selector.selectedOptions && selector.selectedOptions[0];
+    return String(selectedOption?.value || selectedOption?.textContent || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function readModelLabel() {
+  try {
+    const label = document.querySelector('#model-label');
+    return String(label?.textContent || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function readModelSources() {
+  const selectorModel = readSelectorModel();
+  const settingsModel = readSettingsModel();
+  const legacyModel = (getRaw(LS.model) || '').trim();
+  const labelModel = readModelLabel();
+  return {
+    selectorModel,
+    settingsModel,
+    legacyModel,
+    labelModel,
+    selectedModel: selectorModel || settingsModel || legacyModel || labelModel || DEFAULT_MODEL,
+  };
+}
+
 export function readBase() {
   const v = (getRaw(LS.base) || '').trim();
   if (!v || !/^(https?:)?\/\//i.test(v)) return 'http://127.0.0.1:11434';
@@ -70,8 +122,7 @@ export async function listModels() {
 }
 
 export function readModel() {
-  const v = (getRaw(LS.model) || '').trim();
-  return v || 'gpt-oss:20b';
+  return readModelSources().selectedModel;
 }
 
 export function readSys() {
@@ -343,6 +394,39 @@ function buildGeneratePrompt({ sys, convId, userText, maxPast = 16, extraSystemG
   return parts.join('\n\n');
 }
 
+function clipAgentContextText(value, maxLength = 2500) {
+  const text = String(value || '').trim();
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength).trimEnd() + '\n[...contexte tronque par Kivrio Agent UI...]';
+}
+
+function buildCodexAgentPrompt({ convId, userText, maxPast = 8 }) {
+  let history = toChatHistory(readHistory(convId));
+  if (history.length) {
+    const last = history[history.length - 1];
+    if (last.role === 'user' && last.content === userText) {
+      history = history.slice(0, -1);
+    }
+  }
+
+  const trimmed = history.slice(-maxPast);
+  if (!trimmed.length) return userText;
+
+  const parts = [
+    'Contexte recent de la conversation Kivrio Agent UI:',
+    'Utilise ce contexte pour comprendre les confirmations courtes comme "accord" ou "je confirme".',
+    'Si le contexte ne permet pas d identifier clairement le fichier ou le dossier cible, demande une clarification.',
+  ];
+
+  for (const message of trimmed) {
+    const label = message.role === 'user' ? 'Utilisateur' : 'Assistant';
+    parts.push(`${label}:\n${clipAgentContextText(message.content)}`);
+  }
+
+  parts.push(`Message utilisateur actuel:\n${clipAgentContextText(userText, 6000)}`);
+  return parts.join('\n\n');
+}
+
 export async function* streamChat({ base, model, sys, prompt, convId, maxPast = 16, images = [], extraSystemGuidance = '' }) {
   const body = {
     model,
@@ -465,6 +549,167 @@ function setSendButtonBusy(isBusy) {
   btn.title = isBusy ? 'Traitement en cours...' : '';
 }
 
+function normalizeIntentText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function isAgentDiagnosticPrompt(text) {
+  const value = normalizeIntentText(text);
+  if (!value) return false;
+  if (value.startsWith('diagnostic kivrio agent ui')) return true;
+  if (value.startsWith('diagnostic codex')) return true;
+  if (wantsFourLineDiagnostic(value)
+    && (value.includes('codex cli') || value.includes('app-server') || value.includes('app server') || value.includes('ollama'))) {
+    return true;
+  }
+
+  const shortQuestion = value.length <= 120 && value.split(/\s+/).filter(Boolean).length <= 16;
+  const mentionsRuntime = value.includes('codex cli')
+    || value.includes('kivrio agent ui')
+    || value.includes('app-server')
+    || value.includes('app server')
+    || value.includes('provider local')
+    || value.includes('ollama')
+    || value.includes('open source local')
+    || value.includes('gpt-oss');
+  const asksIdentity = value.includes('etes-vous')
+    || value.includes('etes vous')
+    || value.includes('qui etes-vous')
+    || value.includes('qui etes vous')
+    || value.includes('quel modele utilisez-vous')
+    || value.includes('quel modele utilisez vous')
+    || value.includes('modele utilisez-vous')
+    || value.includes('modele utilisez vous')
+    || value.includes('provider utilisez-vous')
+    || value.includes('provider utilisez vous')
+    || value.includes('utilisez-vous ollama')
+    || value.includes('utilisez vous ollama')
+    || value.includes('quel est votre modele')
+    || value.includes('appele via codex')
+    || value.includes('appelee via codex')
+    || value.includes('canal :')
+    || value.includes('regle agents');
+
+  const asksModelIdentity = value.includes('quel modele')
+    || value.includes('modele utilisez-vous')
+    || value.includes('modele utilisez vous')
+    || value.includes('votre modele')
+    || value.includes('quel est votre modele')
+    || value.includes('model utilisez-vous')
+    || value.includes('model utilisez vous')
+    || value.includes('your model');
+
+  return shortQuestion && (mentionsRuntime || asksModelIdentity) && asksIdentity;
+}
+
+function wantsFourLineDiagnostic(text) {
+  const value = normalizeIntentText(text);
+  return (value.includes('4 lignes') || value.includes('quatre lignes'))
+    && (value.includes('canal') || value.includes('provider') || value.includes('regle agents'));
+}
+
+function formatAgentDiagnostic(payload, prompt = '', modelSources = {}) {
+  const channel = String(payload?.channel || 'Ollama launch Codex CLI/app-server');
+  const selected = String(modelSources?.selectedModel || payload?.selectedModel || '').trim();
+  const selectorModel = String(modelSources?.selectorModel || '').trim();
+  const settingsModel = String(modelSources?.settingsModel || '').trim();
+  const legacyModel = String(modelSources?.legacyModel || '').trim();
+  const labelModel = String(modelSources?.labelModel || '').trim();
+  const processModel = String(payload?.processModel || '').trim();
+  const fallbackModel = String(payload?.effectiveModel || payload?.defaultModel || 'inconnu').trim();
+  const model = selected || processModel || fallbackModel;
+  const provider = String(payload?.effectiveProvider || 'inconnu');
+  const ready = Boolean(payload?.codexReady || payload?.ready || payload?.codexHealthy || payload?.healthy);
+  const agentMode = String(payload?.agentMode || 'ollama-launch');
+  const source = String(payload?.source || 'Kivrio Agent UI server');
+  if (wantsFourLineDiagnostic(prompt)) {
+    return [
+      `1. Canal : ${channel}`,
+      `2. Modele selectionne : ${model}`,
+      `3. Provider local : ${provider}`,
+      `4. Mode agent : ${agentMode}`,
+    ].join('\n');
+  }
+  const lines = [
+    `Canal : ${channel}`,
+    `Modele selectionne : ${model}`,
+    `Modele selecteur UI : ${selectorModel || 'non lu'}`,
+    `Modele localStorage : ${settingsModel || legacyModel || 'vide'}`,
+    `Modele libelle UI : ${labelModel || 'non lu'}`,
+    `Modele app-server : ${processModel || 'non demarre'}`,
+    `Provider effectif : ${provider}`,
+    `Mode agent : ${agentMode}`,
+    `Etat Ollama Codex CLI : ${ready ? 'pret' : 'non pret'}`,
+    `Source : ${source}`,
+  ];
+  if (selected && processModel && selected.toLowerCase() !== processModel.toLowerCase()) {
+    lines.push("Note : le prochain message relancera l'app-server avec le modele selectionne.");
+  }
+  return lines.join('\n');
+}
+
+async function completeWithLocalDiagnostic({ convId, aiB, prompt = '' }) {
+  const payload = await getAgentDiagnostic();
+  const modelSources = readModelSources();
+  const answerText = formatAgentDiagnostic(payload, prompt, modelSources);
+  const displayModel = 'Diagnostic local';
+
+  renderAssistantChunk(aiB, {
+    answerText,
+    reasoningText: '',
+    reasoningDurationMs: null,
+  }, { model: displayModel });
+
+  if (convId) {
+    const savedAssistantMessage = await Store.addMsg(convId, 'assistant', answerText, {
+      reasoningText: '',
+      model: displayModel,
+      reasoningDurationMs: null,
+    });
+    bindMessageRecord(aiB, savedAssistantMessage);
+  }
+
+  return payload;
+}
+
+async function completeWithCodexAgent({ prompt, sys, model, convId, aiB }) {
+  const startedAt = Date.now();
+  const agentPrompt = buildCodexAgentPrompt({ convId, userText: prompt });
+  const payload = await sendAgentChat({
+    prompt: agentPrompt,
+    systemPrompt: sys || '',
+    model,
+    conversationId: convId || null,
+  });
+  const answerText = String(payload?.answer || '').trim() || "Codex CLI n'a pas retourne de texte.";
+  const reasoningText = String(payload?.reasoning || '').trim();
+  const reasoningDurationMs = reasoningText ? Date.now() - startedAt : null;
+  const effectiveModel = String(payload?.effectiveModel || payload?.model || model || 'Codex CLI').trim();
+  const effectiveProvider = String(payload?.effectiveProvider || payload?.provider || '').trim();
+  const displayModel = effectiveProvider ? `${effectiveModel} (${effectiveProvider})` : effectiveModel;
+
+  renderAssistantChunk(aiB, {
+    answerText,
+    reasoningText,
+    reasoningDurationMs,
+  }, { model: displayModel });
+
+  if (convId) {
+    const savedAssistantMessage = await Store.addMsg(convId, 'assistant', answerText, {
+      reasoningText,
+      model: displayModel,
+      reasoningDurationMs,
+    });
+    bindMessageRecord(aiB, savedAssistantMessage);
+  }
+
+  return payload;
+}
+
 export async function regenerateFromEditedMessage({ conversationId, messageId, content }) {
   if (!conversationId || messageId == null) {
     throw new Error('Message introuvable.');
@@ -492,8 +737,28 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
       return conversation;
     }
 
+    if (isAgentDiagnosticPrompt(lastMessage.content)) {
+      const diagnosticModel = 'Diagnostic local';
+      aiB = renderMsg('assistant', '', { model: diagnosticModel });
+      try {
+        await completeWithLocalDiagnostic({
+          convId: conversationId,
+          aiB,
+          prompt: lastMessage.content,
+        });
+        try { await mountHistory(); } catch (_) {}
+        return Store.get(conversationId) || conversation;
+      } catch (err) {
+        const msg = 'Erreur: ' + (err && err.message ? err.message : String(err));
+        renderAssistantChunk(aiB, { answerText: msg, reasoningText: '', reasoningDurationMs: null }, { model: diagnosticModel });
+        const savedError = await Store.addMsg(conversationId, 'assistant', msg, { model: diagnosticModel });
+        bindMessageRecord(aiB, savedError);
+        try { await mountHistory(); } catch (_) {}
+        return Store.get(conversationId) || conversation;
+      }
+    }
+
     const model = readModel();
-    const base = readBase();
     let sys = '';
     try {
       await loadSystemPrompt();
@@ -507,35 +772,14 @@ export async function regenerateFromEditedMessage({ conversationId, messageId, c
     }
 
     aiB = renderMsg('assistant', '', { model });
-    const assistantState = createAssistantStreamState();
-
     try {
-      for await (const chunk of streamChat({
-        base,
-        model,
-        sys,
+      await completeWithCodexAgent({
         prompt: lastMessage.content,
+        sys,
+        model,
         convId: conversationId,
-        images: [],
-      })) {
-        mergeAssistantStreamChunk(assistantState, chunk);
-        const livePayload = buildAssistantPayload(assistantState, { live: true });
-        if (!livePayload.answerText.trim() && !livePayload.reasoningText.trim()) continue;
-        renderAssistantChunk(aiB, livePayload, { model });
-      }
-
-      const finalPayload = finalizeAssistantStreamState(assistantState);
-      if (finalPayload.answerText.trim() || finalPayload.reasoningText.trim()) {
-        renderAssistantChunk(aiB, finalPayload, { model });
-      }
-      if (finalPayload.answerText.trim() || finalPayload.reasoningText.trim()) {
-        const savedAssistantMessage = await Store.addMsg(conversationId, 'assistant', finalPayload.answerText, {
-          reasoningText: finalPayload.reasoningText,
-          model,
-          reasoningDurationMs: finalPayload.reasoningDurationMs,
-        });
-        bindMessageRecord(aiB, savedAssistantMessage);
-      }
+        aiB,
+      });
       try { await mountHistory(); } catch (_) {}
       return Store.get(conversationId) || conversation;
     } catch (err) {
@@ -560,14 +804,17 @@ export async function sendCurrent() {
   const text = (ta.value || '').trim();
   const pendingUploads = getPendingUploads();
   if (!text && !pendingUploads.length) return;
+  const isDiagnosticPrompt = isAgentDiagnosticPrompt(text);
   const model = readModel();
   let sys = '';
-  try {
-    await loadSystemPrompt();
-    sys = readSys();
-  } catch (err) {
-    alert('Impossible de charger le prompt systeme: ' + (err?.message || err));
-    return;
+  if (!isDiagnosticPrompt) {
+    try {
+      await loadSystemPrompt();
+      sys = readSys();
+    } catch (err) {
+      alert('Impossible de charger le prompt systeme: ' + (err?.message || err));
+      return;
+    }
   }
   const detachedUploads = pendingUploads.length ? detachPendingUploads() : [];
   const localAttachments = detachedUploads.map((item) => ({
@@ -591,7 +838,6 @@ export async function sendCurrent() {
       try { await window.kivrioEnsureConversationPromise; } catch (_) {}
     }
 
-    const base = readBase();
     let aiB = null;
 
     let convId = Store.currentId?.() || null;
@@ -643,6 +889,34 @@ export async function sendCurrent() {
     } catch (_) {
     }
 
+    if (isDiagnosticPrompt) {
+      const diagnosticModel = 'Diagnostic local';
+      try {
+        await Store.renameIfDefault(convId, fmtTitle(text));
+      } catch (_) {}
+      try {
+        await mountHistory();
+      } catch (_) {}
+      aiB = renderMsg('assistant', '', { model: diagnosticModel });
+      try {
+        await completeWithLocalDiagnostic({
+          convId,
+          aiB,
+          prompt: text,
+        });
+        try { await mountHistory(); } catch (_) {}
+      } catch (err) {
+        const msg = 'Erreur: ' + (err && err.message ? err.message : String(err));
+        renderAssistantChunk(aiB, { answerText: msg, reasoningText: '', reasoningDurationMs: null }, { model: diagnosticModel });
+        if (convId) {
+          const savedError = await Store.addMsg(convId, 'assistant', msg, { model: diagnosticModel });
+          bindMessageRecord(aiB, savedError);
+        }
+        try { await mountHistory(); } catch (_) {}
+      }
+      return;
+    }
+
     const prepared = await preparePendingUploadsForSend({
       model,
       userText: text,
@@ -666,33 +940,14 @@ export async function sendCurrent() {
     } catch (_) {}
 
     if (!aiB) aiB = renderMsg('assistant', '', { model });
-    const assistantState = createAssistantStreamState();
     try {
-      for await (const chunk of streamChat({
-        base,
-        model,
-        sys,
+      await completeWithCodexAgent({
         prompt: prepared.promptText || text,
+        sys,
+        model,
         convId,
-        images: prepared.imagePayloads || [],
-      })) {
-        mergeAssistantStreamChunk(assistantState, chunk);
-        const livePayload = buildAssistantPayload(assistantState, { live: true });
-        if (!livePayload.answerText.trim() && !livePayload.reasoningText.trim()) continue;
-        renderAssistantChunk(aiB, livePayload, { model });
-      }
-      const finalPayload = finalizeAssistantStreamState(assistantState);
-      if (finalPayload.answerText.trim() || finalPayload.reasoningText.trim()) {
-        renderAssistantChunk(aiB, finalPayload, { model });
-      }
-      if (convId && (finalPayload.answerText.trim() || finalPayload.reasoningText.trim())) {
-        const savedAssistantMessage = await Store.addMsg(convId, 'assistant', finalPayload.answerText, {
-          reasoningText: finalPayload.reasoningText,
-          model,
-          reasoningDurationMs: finalPayload.reasoningDurationMs,
-        });
-        bindMessageRecord(aiB, savedAssistantMessage);
-      }
+        aiB,
+      });
       try { await mountHistory(); } catch (_) {}
     } catch (err) {
       const msg = 'Erreur: ' + (err && err.message ? err.message : String(err));

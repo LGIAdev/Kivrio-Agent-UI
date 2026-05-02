@@ -1,5 +1,6 @@
 import { qs } from '../core/dom.js';
 import { sendCurrent, readBase, readModel, ping } from '../net/ollama.js';
+import { getAgentStatus } from '../net/conversationsApi.js';
 
 export function wireSendAction(){
   const ta = qs('#composer-input'); const btn = qs('#send-btn');
@@ -7,25 +8,92 @@ export function wireSendAction(){
   if(btn){ btn.addEventListener('click', (e)=>{ e.preventDefault(); sendCurrent(); }); }
 }
 
-export function mountStatusPill(){
+export function mountStatusPill({ authenticated = false } = {}){
   const label = document.querySelector('#model-label');
   if(!label) return;
-  const pill = document.createElement('span'); pill.className='status-pill';
-  const setPill = (ok, txt)=>{ pill.textContent=''; const dot=document.createElement('span'); dot.textContent='\u25CF'; dot.className = ok ? 'status-ok' : 'status-bad'; const t=document.createElement('span'); t.textContent = txt; pill.append(dot,t); };
-  const refreshTitle = ()=>{ const base = readBase(); const model = readModel(); pill.title = `Base: ${base}\nMod\u00E8le: ${model}\n(Cliquer pour modifier & ping)`; };
+  const modelPill = document.createElement('span'); modelPill.className='status-pill';
+  const codexPill = document.createElement('span'); codexPill.className='status-pill';
+  modelPill.setAttribute('role', 'status');
+  modelPill.setAttribute('aria-live', 'polite');
+  codexPill.setAttribute('role', 'status');
+  codexPill.setAttribute('aria-live', 'polite');
+  const setPill = (pill, state, txt, title = '')=>{
+    pill.textContent='';
+    const dot=document.createElement('span');
+    dot.textContent='\u25CF';
+    dot.className = state === 'ok' ? 'status-ok' : (state === 'wait' ? 'status-wait' : 'status-bad');
+    const t=document.createElement('span');
+    t.textContent = txt;
+    pill.append(dot,t);
+    pill.title = title || txt;
+  };
+  const refreshModelTitle = ()=>{
+    const base = readBase();
+    const model = readModel();
+    label.title = `Base: ${base}\nModele: ${model}`;
+    modelPill.title = `Base: ${base}\nModele: ${model}`;
+  };
+  const titleFromStatus = (status)=>[
+    `Agent: ${status.agentLabel || 'Codex CLI'}`,
+    `Provider: ${status.providerLabel || 'Ollama'}`,
+    `Mode agent: ${status.agentMode || 'oss-local'}`,
+    `Modele par defaut: ${status.defaultModel || '-'}`,
+    `Modele app-server: ${status.processModel || '-'}`,
+    `Etat: ${status.ready && status.healthy ? 'pret' : status.mode || 'indisponible'}`,
+    `Mode: ${status.mode || '-'}`,
+    `Port: ${status.port || '-'}`,
+    `Chemin: ${status.codexPath || '-'}`,
+    status.lastError ? `Erreur: ${status.lastError}` : ''
+  ].filter(Boolean).join('\n');
+  const agentReadyLabel = (status, suffix)=>`${status?.providerLabel || 'Ollama'} ${status?.agentLabel || 'Codex CLI'} ${suffix}`;
+  const modelNamesFromTags = (payload)=>{
+    const arr = Array.isArray(payload) ? payload : (payload?.models || []);
+    return arr.map((m)=>m?.name || m?.model).filter(Boolean);
+  };
+  const refresh = async ()=>{
+    refreshModelTitle();
+    try{
+      const tags = await ping(readBase());
+      const models = modelNamesFromTags(tags);
+      const currentModel = readModel();
+      if(models.length && !models.includes(currentModel)){
+        throw new Error(`Modele Ollama indisponible: ${currentModel}`);
+      }
+      setPill(modelPill, 'ok','OK');
+      modelPill.hidden = false;
+    }catch(e){
+      setPill(modelPill, 'bad','Indisponible', e?.message || 'Modele Ollama indisponible');
+      modelPill.hidden = false;
+      label.title = `${label.title}\nModele indisponible: ${e?.message || e}`;
+    }
+
+    try{
+      const status = await getAgentStatus();
+      const title = titleFromStatus(status || {});
+      if(status?.ready && status?.healthy){
+        setPill(codexPill, 'ok', agentReadyLabel(status, 'pr\u00EAt'), title);
+      }else if(status?.running){
+        setPill(codexPill, 'wait', agentReadyLabel(status, 'd\u00E9marre'), title);
+      }else if(status?.codexFound === false){
+        setPill(codexPill, 'bad', agentReadyLabel(status, 'introuvable'), title);
+      }else{
+        setPill(codexPill, 'bad', agentReadyLabel(status, 'indisponible'), title);
+      }
+    }catch(e){
+      setPill(codexPill, 'bad','Ollama Codex CLI indisponible', e?.message || 'Ollama Codex CLI indisponible');
+    }
+  };
   const holder = document.createElement('span');
 holder.style.display = 'inline-flex';
 holder.style.alignItems = 'center';
 holder.style.gap = '6px';
 holder.style.whiteSpace = 'nowrap';
 label.parentNode.insertBefore(holder, label);
-holder.append(label, pill);
-  setPill(false,'Non test\u00E9'); refreshTitle();
-  pill.addEventListener('click', async ()=>{
-    const base = prompt('Base Ollama (http://127.0.0.1:11434)', readBase()); if(base!=null) localStorage.setItem('ollamaBase', base);
-    const model = prompt('Mod\u00E8le', readModel()); if(model!=null) localStorage.setItem('ollamaModel', model);
-    refreshTitle();
-    try{ await ping(readBase()); setPill(true,'OK'); }catch(e){ setPill(false,'\u00C9chec'); alert('Ping \u00E9chou\u00E9: '+(e?.message||e)); }
-  });
-  ping(readBase()).then(()=>setPill(true,'OK')).catch(()=>setPill(false,'\u00C9chec'));
+holder.append(label, modelPill, codexPill);
+  modelPill.hidden = true;
+  setPill(codexPill, authenticated ? 'wait' : 'bad', authenticated ? 'Ollama Codex CLI...' : 'Connexion requise');
+  modelPill.addEventListener('click', refresh);
+  codexPill.addEventListener('click', refresh);
+  window.addEventListener('kivro:auth-success', refresh);
+  if(authenticated) refresh();
 }

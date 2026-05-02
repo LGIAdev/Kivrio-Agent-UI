@@ -1,6 +1,8 @@
 import { listModels } from '../../net/ollama.js';
 import { getModel, setModel } from '../../store/settings.js';
 
+const DEFAULT_MODEL = 'gpt-oss:20b';
+
 function setSingleOption(el, value, label) {
   el.replaceChildren();
   const option = document.createElement('option');
@@ -42,7 +44,9 @@ export async function mountModelSelect() {
     setModelOptions(el, models);
 
     const current = getModel();
-    el.value = (current && models.includes(current)) ? current : models[0];
+    el.value = (current && models.includes(current))
+      ? current
+      : (models.includes(DEFAULT_MODEL) ? DEFAULT_MODEL : models[0]);
 
     setModel(el.value);
     setLabel(el.value);

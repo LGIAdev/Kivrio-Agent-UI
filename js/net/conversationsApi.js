@@ -142,6 +142,21 @@ export function getAuthStatus() {
   return request('/api/auth/status');
 }
 
+export function getAgentStatus() {
+  return request('/api/agent/status');
+}
+
+export function getAgentDiagnostic() {
+  return request('/api/agent/diagnostic');
+}
+
+export function sendAgentChat(payload) {
+  return request('/api/agent/chat', {
+    method: 'POST',
+    body: payload || {},
+  });
+}
+
 export function login(password) {
   return request('/api/auth/login', {
     method: 'POST',

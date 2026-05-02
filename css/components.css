@@ -292,7 +292,9 @@
   font-size:.9rem;
   opacity:.9;
 }
+.status-pill[hidden]{ display:none !important; }
 .status-ok{ color:var(--accent); }
+.status-wait{ color:#f59e0b; }
 .status-bad{ color:#ef4444; }
 
 /* ===================== 3) Modales / Réglages ====================== */

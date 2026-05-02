@@ -711,7 +711,7 @@ export async function mountHistory() {
     if (allFolders.length > 0) {
       const head = document.createElement('div');
       head.className = 'side-title';
-      head.textContent = 'Dossiers';
+      head.textContent = 'Projets';
       cont.appendChild(head);
 
       for (const folder of allFolders) {

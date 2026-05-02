@@ -157,6 +157,8 @@ $serverCompilerArgs = @(
     '/optimize+',
     "/out:$serverExe",
     '/r:System.Web.Extensions.dll',
+    '/r:System.Net.WebSockets.dll',
+    '/r:System.Net.WebSockets.Client.dll',
     $serverSource
 )
 
