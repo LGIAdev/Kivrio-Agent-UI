@@ -16,8 +16,9 @@
 .chat-log{
   width:80%;               /* largeur stable proportionnelle à l’écran */
   max-width:920px;        /* limite sur grands écrans */
-  margin:20px auto 8px auto;
-  padding:0 16px;
+  margin:20px auto 0 auto;
+  padding:0 16px 20px;
+  box-sizing:border-box;
   display:flex;
   flex-direction:column;
   gap:12px;
@@ -297,6 +298,53 @@
 .status-wait{ color:#f59e0b; }
 .status-bad{ color:#ef4444; }
 
+/* ===================== 2b) Selecteurs topbar ====================== */
+.right-tools{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.model-picker{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  min-height:34px;
+  padding:0 8px;
+  border:1px solid #263244;
+  border-radius:10px;
+  background:#05070b;
+  color:#cbd5e1;
+}
+.model-picker .ico{
+  flex:0 0 auto;
+  opacity:.75;
+}
+.model-picker select{
+  min-width:0;
+  max-width:220px;
+  height:30px;
+  border:0;
+  outline:0;
+  background:#05070b;
+  color:#f8fafc;
+  color-scheme:dark;
+  font:inherit;
+  font-size:.88rem;
+}
+.model-picker select option,
+.model-picker select optgroup{
+  background:#05070b;
+  color:#f8fafc;
+}
+.model-picker select:disabled{
+  color:#94a3b8;
+}
+.profile-picker select{
+  width:96px;
+}
+
 /* ===================== 3) Modales / Réglages ====================== */
 .modal-overlay{
   display:none;
@@ -358,6 +406,15 @@
 }
 
 /* ===================== 6) Barre d’invite (composer) =============== */
+.composer-dock{
+  flex:0 0 auto;
+  position:sticky;
+  bottom:0;
+  z-index:40;
+  width:100%;
+  padding:12px 0 16px;
+  background:linear-gradient(180deg, rgba(11, 13, 18, 0), var(--bg) 34%);
+}
 .composer-card{
   background:var(--surface-field);
   border:1px solid var(--border);
@@ -478,19 +535,24 @@
   color:#64748b;
 }
 
-:root[data-theme="dark"] #model-select{ color-scheme: dark; }
+:root[data-theme="dark"] #model-select,
+:root[data-theme="dark"] #agent-profile-select{ color-scheme: dark; }
 
 /* Fallback si non supporté */
 @supports not (color-scheme: dark){
-  :root[data-theme="dark"] #model-select{
+  :root[data-theme="dark"] #model-select,
+  :root[data-theme="dark"] #agent-profile-select{
     background:#0f172a; color:#e5e7eb;
     border:1px solid #334155; border-radius:8px;
   }
-  :root[data-theme="dark"] #model-select:focus{
+  :root[data-theme="dark"] #model-select:focus,
+  :root[data-theme="dark"] #agent-profile-select:focus{
     outline:none; box-shadow:0 0 0 2px rgba(59,130,246,.35); border-color:#60a5fa;
   }
   :root[data-theme="dark"] #model-select option,
-  :root[data-theme="dark"] #model-select optgroup{
+  :root[data-theme="dark"] #model-select optgroup,
+  :root[data-theme="dark"] #agent-profile-select option,
+  :root[data-theme="dark"] #agent-profile-select optgroup{
     background:#0f172a; color:#e5e7eb;
   }
 }

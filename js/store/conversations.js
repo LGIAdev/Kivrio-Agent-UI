@@ -18,6 +18,7 @@ const K_CUR = 'mpai.current.v1';
 let cache = [];
 let foldersCache = [];
 let openFolders = new Set();
+let deletedConversationIds = new Set();
 let activeMenu = null;
 let menuEventsBound = false;
 
@@ -132,7 +133,10 @@ function upsertConversation(raw) {
 
 function replaceCacheFromList(list) {
   const byId = new Map(cache.map((item) => [item.id, item]));
-  cache = (list || []).map((item) => {
+  cache = (list || []).filter((item) => {
+    const id = item?.id ?? null;
+    return !id || !deletedConversationIds.has(id);
+  }).map((item) => {
     const normalized = normalizeConversation(item);
     const existing = byId.get(normalized.id);
     if (existing?.messagesLoaded) {
@@ -231,6 +235,14 @@ function ensureMenuEvents() {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') closeActiveMenu();
   });
+}
+
+function chatContainsConversation(id) {
+  if (!id) return false;
+  const log = qs('#chat-log');
+  if (!log) return false;
+  return Array.from(log.querySelectorAll('[data-conversation-id]'))
+    .some((item) => item.dataset.conversationId === id);
 }
 
 async function openConversation(id) {
@@ -385,6 +397,7 @@ export const Store = {
 
   async remove(id) {
     await deleteConversation(id);
+    deletedConversationIds.add(id);
     cache = cache.filter((item) => item.id !== id);
     if (this.currentId() === id) this.clearCurrent();
   },
@@ -692,11 +705,17 @@ export async function mountHistory() {
           const ok = window.confirm(`Supprimer la conversation "${titleLabel}" ?`);
           if (!ok) return;
 
-          const wasCurrent = Store.currentId() === conversation.id;
+          const wasCurrent = Store.currentId() === conversation.id || chatContainsConversation(conversation.id);
           try {
             await Store.remove(conversation.id);
             if (wasCurrent) clearChat();
-            await render();
+            await render({ refresh: false });
+            try {
+              await Store.refresh();
+            } catch (err) {
+              console.warn('[history] refresh after delete failed', err);
+            }
+            await render({ refresh: false });
           } catch (err) {
             console.warn('[history] delete conversation failed', err);
           }

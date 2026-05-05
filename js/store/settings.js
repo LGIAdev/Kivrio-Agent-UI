@@ -1,4 +1,6 @@
 // settings.js — source de vérité + compat LEGACY
+import { DEFAULT_AGENT_PROFILE, normalizeAgentProfile } from '../config/agent-profiles.js';
+
 const KEY = 'kivrio_settings_v1';
 const LEGACY_KEY = 'kivro_settings_v1';
 const LEGACY_MODEL_KEY = 'ollamaModel';
@@ -21,20 +23,22 @@ function readSettingsJson(preferredKey = KEY) {
 const initial = (() => {
   try {
     const json = JSON.parse(readSettingsJson());
-    const base = { model: null, ollama_url: 'http://127.0.0.1:11434' };
+    const base = { model: null, ollama_url: 'http://127.0.0.1:11434', agent_profile: DEFAULT_AGENT_PROFILE };
     const st = Object.assign(base, json);
     // Fallback : si pas de modèle en state, lire ancienne clé 'ollamaModel'
     if (!st.model) {
       const legacy = (getLS(LEGACY_MODEL_KEY) || '').trim();
       if (legacy) st.model = legacy;
     }
+    st.agent_profile = normalizeAgentProfile(st.agent_profile);
     return st;
   } catch {
     // Fallback dur si JSON cassé
     const legacy = (getLS(LEGACY_MODEL_KEY) || '').trim();
     return {
       model: legacy || null,
-      ollama_url: 'http://127.0.0.1:11434'
+      ollama_url: 'http://127.0.0.1:11434',
+      agent_profile: DEFAULT_AGENT_PROFILE
     };
   }
 })();
@@ -61,6 +65,14 @@ export const setModel = (m) => {
   document.dispatchEvent(new CustomEvent('settings:model-changed', { detail: state.model }));
 };
 
+export const getAgentProfile = () => normalizeAgentProfile(state.agent_profile);
+
+export const setAgentProfile = (profile) => {
+  state.agent_profile = normalizeAgentProfile(profile);
+  persist();
+  document.dispatchEvent(new CustomEvent('settings:agent-profile-changed', { detail: state.agent_profile }));
+};
+
 export const getOllamaUrl = () => state.ollama_url.replace(/\/+$/, '');
 
 export const setOllamaUrl = (u) => {
@@ -82,6 +94,11 @@ window.addEventListener?.('storage', (ev) => {
           state.model = legacy;
           document.dispatchEvent(new CustomEvent('settings:model-changed', { detail: state.model }));
         }
+      }
+      const nextProfile = normalizeAgentProfile(next.agent_profile);
+      if (nextProfile !== state.agent_profile) {
+        state.agent_profile = nextProfile;
+        document.dispatchEvent(new CustomEvent('settings:agent-profile-changed', { detail: state.agent_profile }));
       }
     } catch {}
   }

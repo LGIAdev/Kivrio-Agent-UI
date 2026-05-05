@@ -108,6 +108,16 @@
     <!-- Topbar avec sélecteur de modèles -->
     <header class="topbar" role="navigation" aria-label="Barre supérieure" style="justify-content:flex-end;">
       <div class="right-tools">
+        <div class="model-picker profile-picker">
+          <svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3.75 19.5 8v8L12 20.25 4.5 16V8L12 3.75Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M12 8v8M8.5 10l3.5 2 3.5-2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <select id="agent-profile-select" autocomplete="off" title="Profil agent">
+            <option value="deep">Profond</option>
+            <option value="fast">Rapide</option>
+          </select>
+        </div>
         <div class="model-picker">
           <svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 3l9 6-9 6-9-6 9-6Zm0 9l9 6-9 6-9-6 9-6Z" fill="currentColor" opacity=".6"/>
@@ -125,6 +135,7 @@
       </section>
 
       <!-- Barre d'invite améliorée -->
+<div class="composer-dock">
 <div class="composer-card">
   <div class="composer-header">
     <button class="icon-btn" id="add-btn" title="Ajouter un fichier" type="button" aria-label="Ajouter un fichier">
@@ -153,6 +164,7 @@
   <input type="file" id="file-input" class="file-input-proxy" multiple accept=".jpg,.jpeg,.png,.webp,.pdf,.txt,.md" />
   <div id="composer-attachments" class="composer-attachments" aria-live="polite"></div>
   <p id="composer-upload-error" class="composer-upload-error" hidden></p>
+</div>
 </div>
     </main>
   </div>
@@ -213,8 +225,12 @@
   <script type="module" src="js/ui/autogrow.js"></script>
   <script type="module">
   import { mountModelSelect } from './js/ui/components/ModelSelect.js';
+  import { mountAgentProfileSelect } from './js/ui/components/AgentProfileSelect.js';
   import './js/chat/render.js';
-  window.addEventListener('DOMContentLoaded', mountModelSelect);
+  window.addEventListener('DOMContentLoaded', () => {
+    mountAgentProfileSelect();
+    mountModelSelect();
+  });
   </script>
 
 </body>

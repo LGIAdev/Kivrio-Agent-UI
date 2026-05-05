@@ -175,9 +175,9 @@
 .user-menu.open{ display:block }
 .side-footer{ margin-top:auto; padding:14px; border-top:1px solid var(--border); color:var(--muted); display:flex; align-items:center; gap:.6rem; cursor:pointer }
 .side-footer:focus{ outline:2px solid var(--accent); outline-offset:2px }
-.main{ position:relative; min-width:0; overflow:auto }
+.main{ position:relative; min-width:0; min-height:100vh; overflow:hidden; display:flex; flex-direction:column; }
 .topbar{ display:flex; align-items:center; gap:.8rem; padding:14px 18px; border-bottom:1px solid var(--border); min-height:48px }
-.center{ display:flex; flex-direction:column; align-items:center; justify-content:flex-start; padding-top:7vh; gap:18px }
+.center{ flex:1 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; padding:7vh 0 24px; gap:18px }
 .logo{ height:48px; padding:0 16px; border-radius:999px; background:var(--surface-card); border:1px solid var(--border); display:grid; place-items:center }
 .logo span{ font-weight:700; letter-spacing:.02em }
 .composer textarea{ flex:1; resize:none; min-height:22px; max-height:38vh; overflow:auto; background:transparent; border:0; outline:0; color:var(--text); font-size:1rem; padding:10px 6px }

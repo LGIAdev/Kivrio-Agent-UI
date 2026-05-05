@@ -269,9 +269,10 @@ namespace KivrioAgentUi
 
                 string systemPrompt = GetBodyString(body, "systemPrompt");
                 string model = GetBodyString(body, "model");
+                string profile = GetBodyString(body, "profile");
                 try
                 {
-                    return Json(_agentBridge.Chat(prompt, systemPrompt, model));
+                    return Json(_agentBridge.Chat(prompt, systemPrompt, model, profile));
                 }
                 catch (Exception ex)
                 {
@@ -1045,6 +1046,59 @@ namespace KivrioAgentUi
         }
     }
 
+    internal sealed class AgentRunProfile
+    {
+        public const string FastId = "fast";
+        public const string DeepId = "deep";
+
+        public readonly string Id;
+        public readonly string Label;
+        public readonly int DefaultTimeoutMs;
+        public readonly string DeveloperInstructions;
+        public readonly string TurnInstructions;
+
+        private AgentRunProfile(string id, string label, int defaultTimeoutMs, string developerInstructions, string turnInstructions)
+        {
+            Id = id;
+            Label = label;
+            DefaultTimeoutMs = defaultTimeoutMs;
+            DeveloperInstructions = developerInstructions;
+            TurnInstructions = turnInstructions;
+        }
+
+        public static AgentRunProfile FromValue(string value)
+        {
+            string id = (value ?? "").Trim().ToLowerInvariant();
+            if (id == FastId || id == "rapide")
+            {
+                return Fast();
+            }
+            return Deep();
+        }
+
+        private static AgentRunProfile Fast()
+        {
+            return new AgentRunProfile(
+                FastId,
+                "Rapide",
+                600000,
+                "Profil Rapide actif: privilegie une reponse directe, concise et actionnable. Evite les explorations larges du depot. Lis seulement les fichiers indispensables. Si une action est demandee, fais le plus petit changement utile. Si une incertitude bloque, demande une clarification rapidement. ",
+                "Profil Rapide: reponds court, evite les longues analyses visibles, propose au maximum 3 etapes si un plan est necessaire."
+            );
+        }
+
+        private static AgentRunProfile Deep()
+        {
+            return new AgentRunProfile(
+                DeepId,
+                "Profond",
+                1200000,
+                "Profil Profond actif: privilegie un diagnostic complet et robuste. Explore les fichiers necessaires avant de modifier. Signale les risques et verifie davantage quand le changement touche plusieurs modules. ",
+                "Profil Profond: prends le temps d'analyser les fichiers utiles et de verifier les impacts avant de conclure."
+            );
+        }
+    }
+
     internal sealed class CodexAgentBridge
     {
         private const int DefaultPort = 17655;
@@ -1162,11 +1216,12 @@ namespace KivrioAgentUi
             return status;
         }
 
-        public Dictionary<string, object> Chat(string prompt, string systemPrompt, string model)
+        public Dictionary<string, object> Chat(string prompt, string systemPrompt, string model, string profile)
         {
             string requestedModel = string.IsNullOrEmpty((model ?? "").Trim())
                 ? LocalAgentConfig.ReadDefaultModel()
                 : LocalAgentConfig.NormalizeModel(model);
+            AgentRunProfile runProfile = AgentRunProfile.FromValue(profile);
             int port;
             lock (_lock)
             {
@@ -1181,7 +1236,7 @@ namespace KivrioAgentUi
             lock (_chatLock)
             {
                 var client = new CodexAppServerClient(port, _root);
-                return client.RunTurn(prompt, systemPrompt, requestedModel);
+                return client.RunTurn(prompt, systemPrompt, requestedModel, runProfile);
             }
         }
 
@@ -1652,9 +1707,10 @@ namespace KivrioAgentUi
             _json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
         }
 
-        public Dictionary<string, object> RunTurn(string prompt, string systemPrompt, string model)
+        public Dictionary<string, object> RunTurn(string prompt, string systemPrompt, string model, AgentRunProfile profile)
         {
-            int turnTimeoutMs = ReadTurnTimeoutMs();
+            AgentRunProfile runProfile = profile ?? AgentRunProfile.FromValue(null);
+            int turnTimeoutMs = ReadTurnTimeoutMs(runProfile);
             string codexTestRoot = GetCodexTestRoot();
             string workspaceRoot = ResolveWorkspaceRoot(prompt, codexTestRoot);
             object[] writableRoots = BuildWritableRoots(workspaceRoot, codexTestRoot);
@@ -1670,7 +1726,7 @@ namespace KivrioAgentUi
 
                     string requestedModel = NormalizeSelectedLocalModel(model);
                     string requestedProvider = LocalAgentConfig.ReadProvider();
-                    Dictionary<string, object> thread = Request(socket, "thread/start", BuildThreadParams(systemPrompt, requestedModel, requestedProvider, workspaceRoot, codexTestRoot, writableRoots, useExecutableSandbox), timeout.Token, null);
+                    Dictionary<string, object> thread = Request(socket, "thread/start", BuildThreadParams(systemPrompt, requestedModel, requestedProvider, workspaceRoot, codexTestRoot, writableRoots, useExecutableSandbox, runProfile), timeout.Token, null);
                     string threadId = GetNestedString(thread, "thread", "id");
                     if (string.IsNullOrEmpty(threadId))
                     {
@@ -1681,7 +1737,7 @@ namespace KivrioAgentUi
                     string effectiveProvider = NormalizeEffectiveProvider(GetString(thread, "modelProvider"), requestedProvider);
 
                     var capture = new CodexTurnCapture(threadId, workspaceRoot, writableRoots, useExecutableSandbox);
-                    Dictionary<string, object> turn = Request(socket, "turn/start", BuildTurnParams(threadId, BuildPromptForTurn(prompt), requestedModel, requestedProvider, workspaceRoot, writableRoots, useExecutableSandbox), timeout.Token, capture);
+                    Dictionary<string, object> turn = Request(socket, "turn/start", BuildTurnParams(threadId, BuildPromptForTurn(prompt, runProfile), requestedModel, requestedProvider, workspaceRoot, writableRoots, useExecutableSandbox), timeout.Token, capture);
                     string turnId = GetNestedString(turn, "turn", "id");
                     if (!string.IsNullOrEmpty(turnId))
                     {
@@ -1734,7 +1790,10 @@ namespace KivrioAgentUi
                         { "requestedModel", requestedModel },
                         { "effectiveModel", effectiveModel },
                         { "requestedProvider", requestedProvider },
-                        { "effectiveProvider", effectiveProvider }
+                        { "effectiveProvider", effectiveProvider },
+                        { "profile", runProfile.Id },
+                        { "profileLabel", runProfile.Label },
+                        { "turnTimeoutMs", turnTimeoutMs }
                     };
                 }
                 catch (OperationCanceledException ex)
@@ -1744,7 +1803,7 @@ namespace KivrioAgentUi
             }
         }
 
-        private static int ReadTurnTimeoutMs()
+        private static int ReadTurnTimeoutMs(AgentRunProfile profile)
         {
             string secondsValue = (Environment.GetEnvironmentVariable("KIVRIO_CODEX_TURN_TIMEOUT_SECONDS") ?? "").Trim();
             int seconds;
@@ -1760,7 +1819,7 @@ namespace KivrioAgentUi
                 return Clamp(milliseconds, MinTurnTimeoutMs, MaxTurnTimeoutMs);
             }
 
-            return DefaultTurnTimeoutMs;
+            return Clamp((profile ?? AgentRunProfile.FromValue(null)).DefaultTimeoutMs, MinTurnTimeoutMs, MaxTurnTimeoutMs);
         }
 
         private static int Clamp(int value, int min, int max)
@@ -1830,7 +1889,7 @@ namespace KivrioAgentUi
             roots.Add(normalized);
         }
 
-        private Dictionary<string, object> BuildThreadParams(string systemPrompt, string model, string provider, string workspaceRoot, string codexTestRoot, object[] writableRoots, bool useExecutableSandbox)
+        private Dictionary<string, object> BuildThreadParams(string systemPrompt, string model, string provider, string workspaceRoot, string codexTestRoot, object[] writableRoots, bool useExecutableSandbox, AgentRunProfile profile)
         {
             var parameters = new Dictionary<string, object>
             {
@@ -1841,7 +1900,7 @@ namespace KivrioAgentUi
                 { "ephemeral", true },
                 { "experimentalRawEvents", false },
                 { "persistExtendedHistory", false },
-                { "developerInstructions", BuildDeveloperInstructions(systemPrompt, model, _root, codexTestRoot, workspaceRoot) }
+                { "developerInstructions", BuildDeveloperInstructions(systemPrompt, model, _root, codexTestRoot, workspaceRoot, profile) }
             };
             parameters["model"] = model;
             parameters["modelProvider"] = provider;
@@ -1892,8 +1951,9 @@ namespace KivrioAgentUi
             return Path.Combine(documents, "CodexCLI-Test");
         }
 
-        private static string BuildDeveloperInstructions(string systemPrompt, string model, string root, string codexTestRoot, string workspaceRoot)
+        private static string BuildDeveloperInstructions(string systemPrompt, string model, string root, string codexTestRoot, string workspaceRoot, AgentRunProfile profile)
         {
+            AgentRunProfile runProfile = profile ?? AgentRunProfile.FromValue(null);
             var builder = new StringBuilder();
             builder.Append("Tu reponds dans Kivrio Agent UI via Codex CLI. ");
             builder.Append("Le dossier de travail effectif de ce tour est ");
@@ -1908,6 +1968,10 @@ namespace KivrioAgentUi
             builder.Append("Le canal est Codex CLI/app-server, l'agent est Codex CLI, le provider local est Ollama et le modele local selectionne est ");
             builder.Append(LocalAgentConfig.NormalizeModel(model));
             builder.Append(". ");
+            builder.Append("Le profil agent Kivrio Agent UI actif est ");
+            builder.Append(runProfile.Label);
+            builder.Append(". ");
+            builder.Append(runProfile.DeveloperInstructions);
             builder.Append("Reponds toujours en francais, sauf si l'utilisateur demande explicitement une autre langue. ");
             builder.Append("Les explications, diagnostics, plans et messages visibles doivent etre en francais. ");
             builder.Append("Par defaut, reste consultatif: propose un plan court et attends un accord explicite avant toute modification. ");
@@ -1927,11 +1991,13 @@ namespace KivrioAgentUi
             return builder.ToString();
         }
 
-        private static string BuildPromptForTurn(string prompt)
+        private static string BuildPromptForTurn(string prompt, AgentRunProfile profile)
         {
+            AgentRunProfile runProfile = profile ?? AgentRunProfile.FromValue(null);
             var builder = new StringBuilder();
             builder.AppendLine("Consigne Kivrio Agent UI:");
             builder.AppendLine("Reponds en francais. N'utilise l'anglais que si l'utilisateur le demande explicitement.");
+            builder.AppendLine(runProfile.TurnInstructions);
             builder.AppendLine();
             builder.AppendLine("Message utilisateur:");
             builder.Append(prompt ?? "");

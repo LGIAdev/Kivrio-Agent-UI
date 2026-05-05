@@ -3,6 +3,8 @@
 
 import { bindMessageRecord, renderMsg, updateBubbleContent } from '../chat/render.js';
 import { Store, fmtTitle, mountHistory } from '../store/conversations.js';
+import { getAgentProfile } from '../store/settings.js';
+import { getAgentProfileDefinition } from '../config/agent-profiles.js';
 import { qs } from '../core/dom.js';
 import {
   detachPendingUploads,
@@ -68,6 +70,20 @@ function readSettingsModel() {
   }
 }
 
+function readSelectorProfile() {
+  try {
+    const selector = document.querySelector('#agent-profile-select');
+    if (!(selector instanceof HTMLSelectElement)) return '';
+    return String(selector.value || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function readAgentProfile() {
+  return readSelectorProfile() || getAgentProfile();
+}
+
 function readSelectorModel() {
   try {
     const selector = document.querySelector('#model-select');
@@ -100,6 +116,7 @@ function readModelSources() {
     settingsModel,
     legacyModel,
     labelModel,
+    agentProfile: readAgentProfile(),
     selectedModel: selectorModel || settingsModel || legacyModel || labelModel || DEFAULT_MODEL,
   };
 }
@@ -620,6 +637,7 @@ function formatAgentDiagnostic(payload, prompt = '', modelSources = {}) {
   const legacyModel = String(modelSources?.legacyModel || '').trim();
   const labelModel = String(modelSources?.labelModel || '').trim();
   const processModel = String(payload?.processModel || '').trim();
+  const profile = getAgentProfileDefinition(modelSources?.agentProfile || payload?.profile || '');
   const fallbackModel = String(payload?.effectiveModel || payload?.defaultModel || 'inconnu').trim();
   const model = selected || processModel || fallbackModel;
   const provider = String(payload?.effectiveProvider || 'inconnu');
@@ -640,6 +658,7 @@ function formatAgentDiagnostic(payload, prompt = '', modelSources = {}) {
     `Modele selecteur UI : ${selectorModel || 'non lu'}`,
     `Modele localStorage : ${settingsModel || legacyModel || 'vide'}`,
     `Modele libelle UI : ${labelModel || 'non lu'}`,
+    `Profil agent : ${profile.label}`,
     `Modele app-server : ${processModel || 'non demarre'}`,
     `Provider effectif : ${provider}`,
     `Mode agent : ${agentMode}`,
@@ -678,11 +697,13 @@ async function completeWithLocalDiagnostic({ convId, aiB, prompt = '' }) {
 
 async function completeWithCodexAgent({ prompt, sys, model, convId, aiB }) {
   const startedAt = Date.now();
+  const profile = readAgentProfile();
   const agentPrompt = buildCodexAgentPrompt({ convId, userText: prompt });
   const payload = await sendAgentChat({
     prompt: agentPrompt,
     systemPrompt: sys || '',
     model,
+    profile,
     conversationId: convId || null,
   });
   const answerText = String(payload?.answer || '').trim() || "Codex CLI n'a pas retourne de texte.";
