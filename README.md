@@ -7,7 +7,7 @@ Kivrio Agent UI is a local interface for using Codex CLI more comfortably with l
 It provides a desktop-style web UI with math rendering, local conversation history, and a fully local persistence layer.
 
 Status: project under active development.
-Version: Kivrio Agent UI 2026.5.3.
+Version: Kivrio Agent UI 2026.5.5.
 
 ---
 
@@ -22,6 +22,8 @@ Standalone release notes will be added when the first dedicated Agent UI package
 
 - Local Ollama integration
 - Codex CLI bridge in local OSS mode through Ollama
+- Coding agent selector for Codex and OpenCode
+- OpenCode bridge through WSL
 - Dark/light theme support
 - Markdown rendering with KaTeX
 - Conversation history in the left sidebar
@@ -40,7 +42,7 @@ Kivrio Agent UI now runs as a local application made of:
 - a local autonomous Windows server
 - a local JSON conversation store
 - a browser UI served from the same local server
-- Codex CLI running as the local coding agent
+- Codex CLI and OpenCode as local coding agents
 - Ollama running as the local inference server
 - local Ollama models running outside Kivrio Agent UI, with `gpt-oss:20b` as the default model
 - direct file reading for supported multimodal models

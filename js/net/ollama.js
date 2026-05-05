@@ -3,8 +3,9 @@
 
 import { bindMessageRecord, renderMsg, updateBubbleContent } from '../chat/render.js';
 import { Store, fmtTitle, mountHistory } from '../store/conversations.js';
-import { getAgentProfile } from '../store/settings.js';
+import { getAgentProfile, getCodingAgent } from '../store/settings.js';
 import { getAgentProfileDefinition } from '../config/agent-profiles.js';
+import { getCodingAgentDefinition, normalizeCodingAgent } from '../config/coding-agents.js';
 import { qs } from '../core/dom.js';
 import {
   detachPendingUploads,
@@ -80,8 +81,29 @@ function readSelectorProfile() {
   }
 }
 
+function readSelectorAgent() {
+  try {
+    const selector = document.querySelector('#coding-agent-select');
+    if (!(selector instanceof HTMLSelectElement)) return '';
+    return String(selector.value || '').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
 function readAgentProfile() {
   return readSelectorProfile() || getAgentProfile();
+}
+
+export function readCodingAgent() {
+  try {
+    const currentId = Store.currentId?.();
+    const conversation = currentId ? Store.get(currentId) : null;
+    const hasMessages = Number(conversation?.messageCount || 0) > 0
+      || (Array.isArray(conversation?.messages) && conversation.messages.length > 0);
+    if (conversation?.agent && hasMessages) return normalizeCodingAgent(conversation.agent);
+  } catch (_) {}
+  return normalizeCodingAgent(readSelectorAgent() || getCodingAgent());
 }
 
 function readSelectorModel() {
@@ -117,6 +139,7 @@ function readModelSources() {
     legacyModel,
     labelModel,
     agentProfile: readAgentProfile(),
+    codingAgent: readCodingAgent(),
     selectedModel: selectorModel || settingsModel || legacyModel || labelModel || DEFAULT_MODEL,
   };
 }
@@ -586,6 +609,8 @@ function isAgentDiagnosticPrompt(text) {
 
   const shortQuestion = value.length <= 120 && value.split(/\s+/).filter(Boolean).length <= 16;
   const mentionsRuntime = value.includes('codex cli')
+    || value.includes('opencode')
+    || value.includes('agent de codage')
     || value.includes('kivrio agent ui')
     || value.includes('app-server')
     || value.includes('app server')
@@ -631,6 +656,7 @@ function wantsFourLineDiagnostic(text) {
 
 function formatAgentDiagnostic(payload, prompt = '', modelSources = {}) {
   const channel = String(payload?.channel || 'Ollama launch Codex CLI/app-server');
+  const agent = getCodingAgentDefinition(modelSources?.codingAgent || payload?.agent || '');
   const selected = String(modelSources?.selectedModel || payload?.selectedModel || '').trim();
   const selectorModel = String(modelSources?.selectorModel || '').trim();
   const settingsModel = String(modelSources?.settingsModel || '').trim();
@@ -654,6 +680,7 @@ function formatAgentDiagnostic(payload, prompt = '', modelSources = {}) {
   }
   const lines = [
     `Canal : ${channel}`,
+    `Agent selectionne : ${agent.label}`,
     `Modele selectionne : ${model}`,
     `Modele selecteur UI : ${selectorModel || 'non lu'}`,
     `Modele localStorage : ${settingsModel || legacyModel || 'vide'}`,
@@ -662,9 +689,21 @@ function formatAgentDiagnostic(payload, prompt = '', modelSources = {}) {
     `Modele app-server : ${processModel || 'non demarre'}`,
     `Provider effectif : ${provider}`,
     `Mode agent : ${agentMode}`,
-    `Etat Ollama Codex CLI : ${ready ? 'pret' : 'non pret'}`,
+    `Etat ${payload?.providerLabel || 'Ollama'} ${agent.label} : ${ready ? 'pret' : 'non pret'}`,
     `Source : ${source}`,
   ];
+  if (payload?.wslFound !== undefined) {
+    lines.push(`WSL : ${payload.wslFound ? (payload.wslDistribution || 'detecte') : 'indisponible'}`);
+  }
+  if (payload?.wslCommandPath) {
+    lines.push(`Chemin agent WSL : ${payload.wslCommandPath}`);
+  }
+  if (payload?.dialogueConnected === false) {
+    lines.push('Dialogue agent : non connecte');
+  }
+  if (payload?.lastError) {
+    lines.push(`Etat detaille : ${payload.lastError}`);
+  }
   if (selected && processModel && selected.toLowerCase() !== processModel.toLowerCase()) {
     lines.push("Note : le prochain message relancera l'app-server avec le modele selectionne.");
   }
@@ -672,8 +711,8 @@ function formatAgentDiagnostic(payload, prompt = '', modelSources = {}) {
 }
 
 async function completeWithLocalDiagnostic({ convId, aiB, prompt = '' }) {
-  const payload = await getAgentDiagnostic();
   const modelSources = readModelSources();
+  const payload = await getAgentDiagnostic(modelSources.codingAgent);
   const answerText = formatAgentDiagnostic(payload, prompt, modelSources);
   const displayModel = 'Diagnostic local';
 
@@ -697,19 +736,22 @@ async function completeWithLocalDiagnostic({ convId, aiB, prompt = '' }) {
 
 async function completeWithCodexAgent({ prompt, sys, model, convId, aiB }) {
   const startedAt = Date.now();
+  const agent = readCodingAgent();
   const profile = readAgentProfile();
   const agentPrompt = buildCodexAgentPrompt({ convId, userText: prompt });
   const payload = await sendAgentChat({
+    agent,
     prompt: agentPrompt,
     systemPrompt: sys || '',
     model,
     profile,
     conversationId: convId || null,
   });
-  const answerText = String(payload?.answer || '').trim() || "Codex CLI n'a pas retourne de texte.";
+  const agentLabel = String(payload?.agentLabel || getCodingAgentDefinition(agent).label || 'Agent').trim();
+  const answerText = String(payload?.answer || '').trim() || `${agentLabel} n'a pas retourne de texte.`;
   const reasoningText = String(payload?.reasoning || '').trim();
   const reasoningDurationMs = reasoningText ? Date.now() - startedAt : null;
-  const effectiveModel = String(payload?.effectiveModel || payload?.model || model || 'Codex CLI').trim();
+  const effectiveModel = String(payload?.effectiveModel || payload?.model || model || agentLabel).trim();
   const effectiveProvider = String(payload?.effectiveProvider || payload?.provider || '').trim();
   const displayModel = effectiveProvider ? `${effectiveModel} (${effectiveProvider})` : effectiveModel;
 
@@ -872,7 +914,7 @@ export async function sendCurrent() {
       }
     }
     if (!convId && Store.create) {
-      const conversation = await Store.create('Nouvelle conversation');
+      const conversation = await Store.create({ title: 'Nouvelle conversation', agent: readCodingAgent() });
       convId = conversation.id;
     }
     if (!convId) {
@@ -884,6 +926,15 @@ export async function sendCurrent() {
       alert(message);
       return;
     }
+
+    try {
+      const activeConversation = Store.get(convId);
+      const hasMessages = Number(activeConversation?.messageCount || 0) > 0
+        || (Array.isArray(activeConversation?.messages) && activeConversation.messages.length > 0);
+      if (activeConversation && (!activeConversation.agent || !hasMessages)) {
+        await Store.update(convId, { agent: readCodingAgent() });
+      }
+    } catch (_) {}
 
     let uploadedAttachments = [];
     if (detachedUploads.length) {

@@ -13,6 +13,7 @@ import {
   updateConversationMessage,
   updateFolder as updateFolderRequest,
 } from '../net/conversationsApi.js';
+import { DEFAULT_CODING_AGENT, getCodingAgentDefinition, normalizeCodingAgent } from '../config/coding-agents.js';
 
 const K_CUR = 'mpai.current.v1';
 let cache = [];
@@ -21,6 +22,17 @@ let openFolders = new Set();
 let deletedConversationIds = new Set();
 let activeMenu = null;
 let menuEventsBound = false;
+
+function notifyCurrentConversationChanged(conversation = null) {
+  try {
+    document.dispatchEvent(new CustomEvent('conversation:current-changed', {
+      detail: {
+        id: conversation?.id || null,
+        conversation,
+      },
+    }));
+  } catch (_) {}
+}
 
 function sortCache() {
   cache.sort((a, b) => (b.updatedAt - a.updatedAt) || (b.createdAt - a.createdAt));
@@ -90,6 +102,8 @@ function normalizeConversation(raw) {
     createdAt: Number(raw?.createdAt ?? raw?.created_at ?? Date.now()),
     updatedAt: Number(raw?.updatedAt ?? raw?.updated_at ?? Date.now()),
     archived: Number(raw?.archived ?? 0),
+    agent: normalizeCodingAgent(raw?.agent ?? raw?.agentId ?? raw?.coding_agent ?? DEFAULT_CODING_AGENT),
+    agentLabel: getCodingAgentDefinition(raw?.agent ?? raw?.agentId ?? raw?.coding_agent ?? DEFAULT_CODING_AGENT).label,
     messageCount: Number(raw?.messageCount ?? raw?.message_count ?? messages.length ?? 0),
     messages,
     messagesLoaded: Array.isArray(raw?.messages) || Boolean(raw?.messagesLoaded),
@@ -283,12 +297,14 @@ export const Store = {
     try {
       localStorage.setItem(K_CUR, id);
     } catch (_) {}
+    notifyCurrentConversationChanged(this.get(id));
   },
 
   clearCurrent() {
     try {
       localStorage.removeItem(K_CUR);
     } catch (_) {}
+    notifyCurrentConversationChanged(null);
   },
 
   async refresh() {
@@ -308,11 +324,13 @@ export const Store = {
   async fetch(id) {
     if (!id) return null;
     const payload = await getConversation(id);
-    return upsertConversation({
+    const conversation = upsertConversation({
       ...payload.conversation,
       messages: payload.messages,
       message_count: Array.isArray(payload.messages) ? payload.messages.length : 0,
     });
+    if (this.currentId() === conversation?.id) notifyCurrentConversationChanged(conversation);
+    return conversation;
   },
 
   async ensureLoaded(id) {
@@ -358,12 +376,15 @@ export const Store = {
     upsertMessageInConversation(conversation, message);
     conversation.updatedAt = message.createdAt;
     upsertConversation(conversation);
+    if (this.currentId() === conversation.id) notifyCurrentConversationChanged(conversation);
     return message;
   },
 
   async rewriteFromMessage(conversationId, messageId, payload) {
     const response = await updateConversationMessage(conversationId, messageId, payload || {});
-    return upsertConversationPayload(response);
+    const conversation = upsertConversationPayload(response);
+    if (this.currentId() === conversationId) notifyCurrentConversationChanged(conversation);
+    return conversation;
   },
 
   async renameIfDefault(id, title) {
@@ -383,7 +404,9 @@ export const Store = {
   async update(id, payload) {
     const conversation = this.get(id);
     const updated = normalizeConversation(await updateConversation(id, payload));
-    return upsertConversation(preserveConversationShape(updated, conversation));
+    const merged = upsertConversation(preserveConversationShape(updated, conversation));
+    if (this.currentId() === id) notifyCurrentConversationChanged(merged);
+    return merged;
   },
 
   async updateFolder(id, payload) {

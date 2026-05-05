@@ -1,5 +1,5 @@
 import { qs } from '../core/dom.js';
-import { sendCurrent, readBase, readModel, ping } from '../net/ollama.js';
+import { sendCurrent, readBase, readModel, readCodingAgent, ping } from '../net/ollama.js';
 import { getAgentStatus } from '../net/conversationsApi.js';
 
 export function wireSendAction(){
@@ -42,7 +42,10 @@ export function mountStatusPill({ authenticated = false } = {}){
     `Etat: ${status.ready && status.healthy ? 'pret' : status.mode || 'indisponible'}`,
     `Mode: ${status.mode || '-'}`,
     `Port: ${status.port || '-'}`,
-    `Chemin: ${status.codexPath || '-'}`,
+    `Chemin: ${status.agentPath || status.codexPath || '-'}`,
+    status.wslFound !== undefined ? `WSL: ${status.wslFound ? (status.wslDistribution || 'detecte') : 'indisponible'}` : '',
+    status.wslCommandPath ? `Chemin WSL: ${status.wslCommandPath}` : '',
+    status.dialogueConnected === false ? 'Dialogue: non connecte' : '',
     status.lastError ? `Erreur: ${status.lastError}` : ''
   ].filter(Boolean).join('\n');
   const agentReadyLabel = (status, suffix)=>`${status?.providerLabel || 'Ollama'} ${status?.agentLabel || 'Codex CLI'} ${suffix}`;
@@ -68,12 +71,16 @@ export function mountStatusPill({ authenticated = false } = {}){
     }
 
     try{
-      const status = await getAgentStatus();
+      const status = await getAgentStatus(readCodingAgent());
       const title = titleFromStatus(status || {});
       if(status?.ready && status?.healthy){
         setPill(codexPill, 'ok', agentReadyLabel(status, 'pr\u00EAt'), title);
       }else if(status?.running){
         setPill(codexPill, 'wait', agentReadyLabel(status, 'd\u00E9marre'), title);
+      }else if(status?.mode === 'wsl-detected' || (status?.agentFound === true && status?.dialogueConnected === false)){
+        setPill(codexPill, 'wait', agentReadyLabel(status, 'd\u00E9tect\u00E9 via WSL'), title);
+      }else if(status?.agentFound === false){
+        setPill(codexPill, 'bad', agentReadyLabel(status, 'introuvable'), title);
       }else if(status?.codexFound === false){
         setPill(codexPill, 'bad', agentReadyLabel(status, 'introuvable'), title);
       }else{
@@ -95,5 +102,7 @@ holder.append(label, modelPill, codexPill);
   modelPill.addEventListener('click', refresh);
   codexPill.addEventListener('click', refresh);
   window.addEventListener('kivro:auth-success', refresh);
+  document.addEventListener('settings:coding-agent-changed', refresh);
+  document.addEventListener('conversation:current-changed', refresh);
   if(authenticated) refresh();
 }

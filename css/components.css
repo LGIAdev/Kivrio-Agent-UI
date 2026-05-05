@@ -344,6 +344,16 @@
 .profile-picker select{
   width:96px;
 }
+.agent-picker select{
+  width:126px;
+}
+.model-picker.is-locked{
+  border-color:#334155;
+  background:#070a10;
+}
+.model-picker.is-locked select{
+  cursor:not-allowed;
+}
 
 /* ===================== 3) Modales / Réglages ====================== */
 .modal-overlay{

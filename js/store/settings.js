@@ -1,5 +1,6 @@
 // settings.js — source de vérité + compat LEGACY
 import { DEFAULT_AGENT_PROFILE, normalizeAgentProfile } from '../config/agent-profiles.js';
+import { DEFAULT_CODING_AGENT, normalizeCodingAgent } from '../config/coding-agents.js';
 
 const KEY = 'kivrio_settings_v1';
 const LEGACY_KEY = 'kivro_settings_v1';
@@ -23,7 +24,12 @@ function readSettingsJson(preferredKey = KEY) {
 const initial = (() => {
   try {
     const json = JSON.parse(readSettingsJson());
-    const base = { model: null, ollama_url: 'http://127.0.0.1:11434', agent_profile: DEFAULT_AGENT_PROFILE };
+    const base = {
+      model: null,
+      ollama_url: 'http://127.0.0.1:11434',
+      agent_profile: DEFAULT_AGENT_PROFILE,
+      coding_agent: DEFAULT_CODING_AGENT,
+    };
     const st = Object.assign(base, json);
     // Fallback : si pas de modèle en state, lire ancienne clé 'ollamaModel'
     if (!st.model) {
@@ -31,6 +37,7 @@ const initial = (() => {
       if (legacy) st.model = legacy;
     }
     st.agent_profile = normalizeAgentProfile(st.agent_profile);
+    st.coding_agent = normalizeCodingAgent(st.coding_agent);
     return st;
   } catch {
     // Fallback dur si JSON cassé
@@ -38,7 +45,8 @@ const initial = (() => {
     return {
       model: legacy || null,
       ollama_url: 'http://127.0.0.1:11434',
-      agent_profile: DEFAULT_AGENT_PROFILE
+      agent_profile: DEFAULT_AGENT_PROFILE,
+      coding_agent: DEFAULT_CODING_AGENT
     };
   }
 })();
@@ -73,6 +81,14 @@ export const setAgentProfile = (profile) => {
   document.dispatchEvent(new CustomEvent('settings:agent-profile-changed', { detail: state.agent_profile }));
 };
 
+export const getCodingAgent = () => normalizeCodingAgent(state.coding_agent);
+
+export const setCodingAgent = (agent) => {
+  state.coding_agent = normalizeCodingAgent(agent);
+  persist();
+  document.dispatchEvent(new CustomEvent('settings:coding-agent-changed', { detail: state.coding_agent }));
+};
+
 export const getOllamaUrl = () => state.ollama_url.replace(/\/+$/, '');
 
 export const setOllamaUrl = (u) => {
@@ -99,6 +115,11 @@ window.addEventListener?.('storage', (ev) => {
       if (nextProfile !== state.agent_profile) {
         state.agent_profile = nextProfile;
         document.dispatchEvent(new CustomEvent('settings:agent-profile-changed', { detail: state.agent_profile }));
+      }
+      const nextAgent = normalizeCodingAgent(next.coding_agent);
+      if (nextAgent !== state.coding_agent) {
+        state.coding_agent = nextAgent;
+        document.dispatchEvent(new CustomEvent('settings:coding-agent-changed', { detail: state.coding_agent }));
       }
     } catch {}
   }

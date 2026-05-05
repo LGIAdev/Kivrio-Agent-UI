@@ -142,12 +142,14 @@ export function getAuthStatus() {
   return request('/api/auth/status');
 }
 
-export function getAgentStatus() {
-  return request('/api/agent/status');
+export function getAgentStatus(agent) {
+  const suffix = agent ? `?agent=${encodeURIComponent(agent)}` : '';
+  return request('/api/agent/status' + suffix);
 }
 
-export function getAgentDiagnostic() {
-  return request('/api/agent/diagnostic');
+export function getAgentDiagnostic(agent) {
+  const suffix = agent ? `?agent=${encodeURIComponent(agent)}` : '';
+  return request('/api/agent/diagnostic' + suffix);
 }
 
 export function sendAgentChat(payload) {

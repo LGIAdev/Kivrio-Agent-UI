@@ -6,6 +6,7 @@ import { wireSendAction, mountStatusPill } from './ui/actions.js';
 import { initAuthGate, wireLogout } from './auth/logout.js';
 import { wireUploads } from './features/uploads.js';
 import { regenerateFromEditedMessage } from './net/ollama.js';
+import { getCodingAgent } from './store/settings.js';
 import('./features/math/katex-init.js')
   .then(({ initKatex }) => {
     initKatex();
@@ -100,7 +101,7 @@ async function createConversationWithBestEffort(title) {
     let id = null;
     try {
       if (typeof Store?.create === 'function') {
-        const conversation = await Store.create({ title });
+        const conversation = await Store.create({ title, agent: getCodingAgent() });
         id = conversation?.id || null;
       } else if (typeof window.kivrioCreateConversation === 'function') {
         id = await window.kivrioCreateConversation(title);

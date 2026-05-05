@@ -250,12 +250,12 @@ namespace KivrioAgentUi
 
             if (method == "GET" && path == "/api/agent/status")
             {
-                return Json(_agentBridge.Status(true));
+                return Json(_agentBridge.Status(true, GetQueryString(request, "agent")));
             }
 
             if (method == "GET" && path == "/api/agent/diagnostic")
             {
-                return Json(_agentBridge.Diagnostic());
+                return Json(_agentBridge.Diagnostic(GetQueryString(request, "agent")));
             }
 
             if (method == "POST" && path == "/api/agent/chat")
@@ -270,13 +270,14 @@ namespace KivrioAgentUi
                 string systemPrompt = GetBodyString(body, "systemPrompt");
                 string model = GetBodyString(body, "model");
                 string profile = GetBodyString(body, "profile");
+                string agent = GetBodyString(body, "agent");
                 try
                 {
-                    return Json(_agentBridge.Chat(prompt, systemPrompt, model, profile));
+                    return Json(_agentBridge.Chat(prompt, systemPrompt, model, profile, agent));
                 }
                 catch (Exception ex)
                 {
-                    return JsonError(HttpStatusCode.BadGateway, "Dialogue Codex CLI impossible: " + ex.Message);
+                    return JsonError(HttpStatusCode.BadGateway, "Dialogue agent impossible: " + ex.Message);
                 }
             }
 
@@ -759,6 +760,29 @@ namespace KivrioAgentUi
             return Convert.ToString(body[key]) ?? "";
         }
 
+        private static string GetQueryString(HttpRequest request, string key)
+        {
+            string target = request == null ? "" : (request.Target ?? "");
+            int queryIndex = target.IndexOf('?');
+            if (queryIndex < 0 || queryIndex + 1 >= target.Length) return "";
+
+            string query = target.Substring(queryIndex + 1);
+            string[] pairs = query.Split('&');
+            for (int i = 0; i < pairs.Length; i++)
+            {
+                string pair = pairs[i] ?? "";
+                int equals = pair.IndexOf('=');
+                string rawName = equals >= 0 ? pair.Substring(0, equals) : pair;
+                if (!string.Equals(Uri.UnescapeDataString(rawName.Replace("+", " ")), key, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                string rawValue = equals >= 0 ? pair.Substring(equals + 1) : "";
+                return Uri.UnescapeDataString(rawValue.Replace("+", " "));
+            }
+            return "";
+        }
+
         private static bool EnvFlag(string name, bool defaultValue)
         {
             string raw = Environment.GetEnvironmentVariable(name);
@@ -1007,7 +1031,7 @@ namespace KivrioAgentUi
 
     internal static class LocalAgentConfig
     {
-        public const string Agent = "codex-cli";
+        public const string Agent = "codex";
         public const string AgentLabel = "Codex CLI";
         public const string Provider = "ollama";
         public const string ProviderLabel = "Ollama";
@@ -1043,6 +1067,67 @@ namespace KivrioAgentUi
                 throw new InvalidOperationException(MissingModelMessage);
             }
             return value;
+        }
+    }
+
+    internal sealed class CodingAgentDefinition
+    {
+        public readonly string Id;
+        public readonly string Label;
+        public readonly string Integration;
+        public readonly string Channel;
+        public readonly bool SupportsAppServer;
+        public readonly string WslCommand;
+        public readonly string WslFallbackPath;
+
+        public CodingAgentDefinition(string id, string label, string integration, string channel, bool supportsAppServer, string wslCommand, string wslFallbackPath)
+        {
+            Id = id;
+            Label = label;
+            Integration = integration;
+            Channel = channel;
+            SupportsAppServer = supportsAppServer;
+            WslCommand = wslCommand;
+            WslFallbackPath = wslFallbackPath;
+        }
+    }
+
+    internal static class CodingAgentCatalog
+    {
+        public const string DefaultId = "codex";
+
+        private static readonly CodingAgentDefinition[] Agents = new[]
+        {
+            new CodingAgentDefinition("codex", "Codex CLI", "codex", "Ollama launch Codex CLI/app-server", true, "", ""),
+            new CodingAgentDefinition("opencode", "OpenCode", "opencode", "WSL OpenCode", false, "opencode", "$HOME/.opencode/bin/opencode")
+        };
+
+        public static CodingAgentDefinition FromValue(string value)
+        {
+            string id = NormalizeId(value);
+            for (int i = 0; i < Agents.Length; i++)
+            {
+                if (string.Equals(Agents[i].Id, id, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Agents[i];
+                }
+            }
+            return Agents[0];
+        }
+
+        public static string NormalizeId(string value)
+        {
+            string id = (value ?? "").Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(id)) return DefaultId;
+            if (id == "codex-cli" || id == "codex cli") return DefaultId;
+            for (int i = 0; i < Agents.Length; i++)
+            {
+                if (string.Equals(Agents[i].Id, id, StringComparison.OrdinalIgnoreCase))
+                {
+                    return Agents[i].Id;
+                }
+            }
+            return DefaultId;
         }
     }
 
@@ -1138,6 +1223,16 @@ namespace KivrioAgentUi
             }
         }
 
+        public Dictionary<string, object> Status(bool ensureStarted, string agent)
+        {
+            CodingAgentDefinition selectedAgent = CodingAgentCatalog.FromValue(agent);
+            if (!selectedAgent.SupportsAppServer)
+            {
+                return UnsupportedAgentStatus(selectedAgent);
+            }
+            return Status(ensureStarted);
+        }
+
         public Dictionary<string, object> Status(bool ensureStarted)
         {
             lock (_lock)
@@ -1170,6 +1265,7 @@ namespace KivrioAgentUi
                     { "ok", true },
                     { "agent", LocalAgentConfig.Agent },
                     { "agentLabel", LocalAgentConfig.AgentLabel },
+                    { "integration", "codex" },
                     { "provider", LocalAgentConfig.Provider },
                     { "providerLabel", LocalAgentConfig.ProviderLabel },
                     { "agentMode", LocalAgentConfig.Mode },
@@ -1194,6 +1290,24 @@ namespace KivrioAgentUi
             }
         }
 
+        public Dictionary<string, object> Diagnostic(string agent)
+        {
+            CodingAgentDefinition selectedAgent = CodingAgentCatalog.FromValue(agent);
+            if (!selectedAgent.SupportsAppServer)
+            {
+                Dictionary<string, object> unsupported = UnsupportedAgentStatus(selectedAgent);
+                unsupported["diagnostic"] = true;
+                unsupported["channel"] = selectedAgent.Channel;
+                unsupported["effectiveModel"] = LocalAgentConfig.DefaultModel;
+                unsupported["effectiveProvider"] = LocalAgentConfig.Provider;
+                unsupported["codexReady"] = false;
+                unsupported["codexHealthy"] = false;
+                unsupported["source"] = "Kivrio Agent UI server";
+                return unsupported;
+            }
+            return Diagnostic();
+        }
+
         public Dictionary<string, object> Diagnostic()
         {
             Dictionary<string, object> status = Status(true);
@@ -1206,6 +1320,7 @@ namespace KivrioAgentUi
             status["effectiveProvider"] = LocalAgentConfig.Provider;
             status["agent"] = LocalAgentConfig.Agent;
             status["agentLabel"] = LocalAgentConfig.AgentLabel;
+            status["integration"] = "codex";
             status["providerLabel"] = LocalAgentConfig.ProviderLabel;
             status["agentMode"] = LocalAgentConfig.Mode;
             status["defaultModel"] = LocalAgentConfig.DefaultModel;
@@ -1216,8 +1331,14 @@ namespace KivrioAgentUi
             return status;
         }
 
-        public Dictionary<string, object> Chat(string prompt, string systemPrompt, string model, string profile)
+        public Dictionary<string, object> Chat(string prompt, string systemPrompt, string model, string profile, string agent)
         {
+            CodingAgentDefinition selectedAgent = CodingAgentCatalog.FromValue(agent);
+            if (!selectedAgent.SupportsAppServer)
+            {
+                return ChatWithWslAgent(selectedAgent, prompt, systemPrompt, model, profile);
+            }
+
             string requestedModel = string.IsNullOrEmpty((model ?? "").Trim())
                 ? LocalAgentConfig.ReadDefaultModel()
                 : LocalAgentConfig.NormalizeModel(model);
@@ -1238,6 +1359,677 @@ namespace KivrioAgentUi
                 var client = new CodexAppServerClient(port, _root);
                 return client.RunTurn(prompt, systemPrompt, requestedModel, runProfile);
             }
+        }
+
+        private static Dictionary<string, object> UnsupportedAgentStatus(CodingAgentDefinition agent)
+        {
+            string launcherPath = FindOllamaCommand();
+            bool ollamaFound = !string.IsNullOrEmpty(launcherPath) && File.Exists(launcherPath);
+            WslAgentDetection wsl = DetectWslAgent(agent);
+            bool dialogueConnected = wsl.AgentFound;
+            string mode = dialogueConnected ? "wsl-ready" : (wsl.WslFound ? "wsl-agent-missing" : "wsl-unavailable");
+            string message = dialogueConnected
+                ? agent.Label + " detecte via WSL. Adaptateur de dialogue Kivrio Agent UI disponible."
+                : agent.Label + " introuvable via WSL.";
+            return new Dictionary<string, object>
+            {
+                { "ok", true },
+                { "agent", agent.Id },
+                { "agentLabel", agent.Label },
+                { "integration", agent.Integration },
+                { "provider", LocalAgentConfig.Provider },
+                { "providerLabel", LocalAgentConfig.ProviderLabel },
+                { "agentMode", "wsl-optional" },
+                { "defaultModel", LocalAgentConfig.DefaultModel },
+                { "processModel", "" },
+                { "codexFound", false },
+                { "agentFound", wsl.AgentFound },
+                { "ollamaFound", ollamaFound },
+                { "ollamaPath", launcherPath ?? "" },
+                { "codexPath", "" },
+                { "agentPath", wsl.CommandPath ?? "" },
+                { "wslFound", wsl.WslFound },
+                { "wslPath", wsl.WslPath ?? "" },
+                { "wslDistribution", wsl.Distribution ?? "" },
+                { "wslCommandPath", wsl.CommandPath ?? "" },
+                { "wslError", wsl.Error ?? "" },
+                { "dialogueConnected", dialogueConnected },
+                { "mode", mode },
+                { "running", dialogueConnected },
+                { "ownedProcess", false },
+                { "attachedToExisting", false },
+                { "processId", 0 },
+                { "port", 0 },
+                { "url", "" },
+                { "ready", dialogueConnected },
+                { "healthy", dialogueConnected },
+                { "startedAt", 0 },
+                { "lastError", message },
+                { "channel", agent.Channel }
+            };
+        }
+
+        private Dictionary<string, object> ChatWithWslAgent(CodingAgentDefinition agent, string prompt, string systemPrompt, string model, string profile)
+        {
+            string requestedModel = string.IsNullOrEmpty((model ?? "").Trim())
+                ? LocalAgentConfig.ReadDefaultModel()
+                : LocalAgentConfig.NormalizeModel(model);
+            AgentRunProfile runProfile = AgentRunProfile.FromValue(profile);
+            WslAgentDetection wsl = DetectWslAgent(agent);
+            if (!wsl.WslFound)
+            {
+                throw new InvalidOperationException("WSL indisponible pour " + agent.Label + ": " + (wsl.Error ?? "wsl.exe introuvable."));
+            }
+            if (!wsl.AgentFound || string.IsNullOrWhiteSpace(wsl.CommandPath))
+            {
+                throw new InvalidOperationException(agent.Label + " introuvable dans WSL: " + (wsl.Error ?? "commande absente."));
+            }
+
+            string codexTestRoot = WslCliAgentClient.GetCodexTestRoot();
+            string workspaceRoot = WslCliAgentClient.ResolveWorkspaceRoot(prompt, _root, codexTestRoot);
+            var client = new WslCliAgentClient(agent, wsl, workspaceRoot, _root, codexTestRoot);
+            return client.RunTurn(prompt, systemPrompt, requestedModel, runProfile);
+        }
+
+        private sealed class WslAgentDetection
+        {
+            public bool WslFound;
+            public bool AgentFound;
+            public string WslPath;
+            public string Distribution;
+            public string CommandPath;
+            public string Error;
+        }
+
+        private sealed class ProcessCapture
+        {
+            public bool Started;
+            public bool TimedOut;
+            public int ExitCode;
+            public string Output;
+            public string Error;
+            public string StartError;
+        }
+
+        private sealed class WslCliAgentClient
+        {
+            private readonly CodingAgentDefinition _agent;
+            private readonly WslAgentDetection _wsl;
+            private readonly string _workspaceRoot;
+            private readonly string _kivrioRoot;
+            private readonly string _codexTestRoot;
+
+            public WslCliAgentClient(CodingAgentDefinition agent, WslAgentDetection wsl, string workspaceRoot, string kivrioRoot, string codexTestRoot)
+            {
+                _agent = agent;
+                _wsl = wsl;
+                _workspaceRoot = workspaceRoot;
+                _kivrioRoot = kivrioRoot;
+                _codexTestRoot = codexTestRoot;
+            }
+
+            public Dictionary<string, object> RunTurn(string prompt, string systemPrompt, string model, AgentRunProfile profile)
+            {
+                AgentRunProfile runProfile = profile ?? AgentRunProfile.FromValue(null);
+                string requestedModel = LocalAgentConfig.NormalizeModel(model);
+                string input = BuildAgentPrompt(prompt, systemPrompt, requestedModel, runProfile);
+                ProcessCapture capture = RunAgentProcess(input, requestedModel, runProfile);
+                if (!capture.Started)
+                {
+                    throw new InvalidOperationException(_agent.Label + " n'a pas pu demarrer via WSL: " + (capture.StartError ?? "erreur inconnue."));
+                }
+                if (capture.TimedOut)
+                {
+                    throw new TimeoutException("Temps maximal depasse pendant la reponse " + _agent.Label + " via WSL (" + (ReadWslTurnTimeoutMs(runProfile) / 1000) + " secondes).");
+                }
+                if (capture.ExitCode != 0)
+                {
+                    throw new InvalidOperationException(_agent.Label + " via WSL a echoue: " + BuildProcessError(capture));
+                }
+
+                string answer = ExtractAnswer(capture.Output);
+                if (string.IsNullOrWhiteSpace(answer))
+                {
+                    answer = StripAnsi(capture.Output ?? "").Trim();
+                }
+                if (string.IsNullOrWhiteSpace(answer))
+                {
+                    answer = _agent.Label + " n'a pas retourne de texte.";
+                }
+
+                return new Dictionary<string, object>
+                {
+                    { "ok", true },
+                    { "answer", answer },
+                    { "reasoning", "" },
+                    { "threadId", "" },
+                    { "turnId", "" },
+                    { "model", requestedModel },
+                    { "provider", LocalAgentConfig.Provider },
+                    { "agent", _agent.Id },
+                    { "agentLabel", _agent.Label },
+                    { "providerLabel", LocalAgentConfig.ProviderLabel },
+                    { "agentMode", "wsl-cli" },
+                    { "requestedModel", requestedModel },
+                    { "effectiveModel", requestedModel },
+                    { "requestedProvider", LocalAgentConfig.Provider },
+                    { "effectiveProvider", LocalAgentConfig.Provider },
+                    { "profile", runProfile.Id },
+                    { "profileLabel", runProfile.Label },
+                    { "turnTimeoutMs", ReadWslTurnTimeoutMs(runProfile) },
+                    { "wslDistribution", _wsl.Distribution ?? "" },
+                    { "wslCommandPath", _wsl.CommandPath ?? "" },
+                    { "workspaceRoot", _workspaceRoot }
+                };
+            }
+
+            public static string GetCodexTestRoot()
+            {
+                string documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                if (string.IsNullOrWhiteSpace(documents))
+                {
+                    documents = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Documents");
+                }
+                return Path.Combine(documents, "CodexCLI-Test");
+            }
+
+            public static string ResolveWorkspaceRoot(string prompt, string kivrioRoot, string codexTestRoot)
+            {
+                if (PromptTargetsCodexTest(prompt, codexTestRoot))
+                {
+                    Directory.CreateDirectory(codexTestRoot);
+                    return codexTestRoot;
+                }
+                return kivrioRoot;
+            }
+
+            private static bool PromptTargetsCodexTest(string prompt, string codexTestRoot)
+            {
+                string value = (prompt ?? "").ToLowerInvariant();
+                string normalizedRoot = (codexTestRoot ?? "").ToLowerInvariant();
+                return value.Contains("codexcli-test")
+                    || value.Contains("codexcli test")
+                    || (!string.IsNullOrEmpty(normalizedRoot) && value.Contains(normalizedRoot));
+            }
+
+            private ProcessCapture RunAgentProcess(string input, string model, AgentRunProfile profile)
+            {
+                string distro = string.Equals(_wsl.Distribution, "default", StringComparison.OrdinalIgnoreCase) ? "" : (_wsl.Distribution ?? "");
+                string promptFile = CreatePromptTempFile(input);
+                string scriptFile = "";
+                try
+                {
+                    scriptFile = CreateAgentScriptTempFile(model, promptFile);
+                    string wslScriptFile = WindowsPathToWsl(scriptFile);
+                    string arguments = string.IsNullOrWhiteSpace(distro)
+                        ? "-- bash " + QuoteArg(wslScriptFile)
+                        : "-d " + QuoteArg(distro) + " -- bash " + QuoteArg(wslScriptFile);
+                    return RunProcessCaptureWithInput(_wsl.WslPath, arguments, "", ReadWslTurnTimeoutMs(profile));
+                }
+                finally
+                {
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(promptFile) && File.Exists(promptFile)) File.Delete(promptFile);
+                    }
+                    catch
+                    {
+                    }
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(scriptFile) && File.Exists(scriptFile)) File.Delete(scriptFile);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            private string BuildAgentScript(string model, string promptFile)
+            {
+                string workspace = WindowsPathToWsl(_workspaceRoot);
+                string wslPromptFile = WindowsPathToWsl(promptFile);
+                string agentPath = _wsl.CommandPath ?? "";
+                var builder = new StringBuilder();
+                builder.AppendLine("#!/usr/bin/env bash");
+                builder.AppendLine("set -u");
+                builder.Append("cd ").Append(ShellSingleQuote(workspace)).AppendLine(" || exit 72");
+                builder.Append("prompt_file=").Append(ShellSingleQuote(wslPromptFile)).AppendLine();
+                builder.AppendLine("if [ ! -f \"$prompt_file\" ]; then");
+                builder.AppendLine("  printf '%s\\n' \"Fichier prompt WSL introuvable: $prompt_file\" >&2");
+                builder.AppendLine("  exit 73");
+                builder.AppendLine("fi");
+                builder.AppendLine("prompt=$(cat \"$prompt_file\")");
+                builder.AppendLine("rm -f \"$prompt_file\"");
+                builder.AppendLine("if [ -z \"$prompt\" ]; then");
+                builder.AppendLine("  printf '%s\\n' \"Prompt WSL vide.\" >&2");
+                builder.AppendLine("  exit 74");
+                builder.AppendLine("fi");
+
+                if (_agent.Id == "opencode")
+                {
+                    builder.Append("exec ").Append(ShellSingleQuote(agentPath));
+                    builder.Append(" run --format json");
+                    builder.Append(" --model ").Append(ShellSingleQuote(ToOpenCodeModel(model)));
+                    builder.Append(" --dir ").Append(ShellSingleQuote(workspace));
+                    builder.AppendLine(" \"$prompt\"");
+                    return builder.ToString();
+                }
+
+                throw new InvalidOperationException("Agent WSL non pris en charge: " + _agent.Label);
+            }
+
+            private string CreateAgentScriptTempFile(string model, string promptFile)
+            {
+                string dir = GetTempDirectory();
+                string path = Path.Combine(dir, "agent-run-" + Guid.NewGuid().ToString("N") + ".sh");
+                string script = BuildAgentScript(model, promptFile).Replace("\r\n", "\n").Replace("\r", "\n");
+                File.WriteAllText(path, script, new UTF8Encoding(false));
+                return path;
+            }
+
+            private static string CreatePromptTempFile(string input)
+            {
+                string dir = GetTempDirectory();
+                string path = Path.Combine(dir, "agent-prompt-" + Guid.NewGuid().ToString("N") + ".txt");
+                File.WriteAllText(path, input ?? "", new UTF8Encoding(false));
+                return path;
+            }
+
+            private static string GetTempDirectory()
+            {
+                string dir = Path.Combine(Path.GetTempPath(), "KivrioAgentUi");
+                Directory.CreateDirectory(dir);
+                return dir;
+            }
+
+            private string BuildAgentPrompt(string prompt, string systemPrompt, string model, AgentRunProfile profile)
+            {
+                AgentRunProfile runProfile = profile ?? AgentRunProfile.FromValue(null);
+                var builder = new StringBuilder();
+                builder.AppendLine("Consigne Kivrio Agent UI:");
+                builder.AppendLine("Tu reponds dans Kivrio Agent UI via " + _agent.Label + " lance depuis WSL.");
+                builder.AppendLine("Le dossier de travail effectif de ce tour est " + _workspaceRoot + ".");
+                builder.AppendLine("Quand l'utilisateur mentionne Documents > Kivrio Agent UI, il designe le dossier local " + _kivrioRoot + ".");
+                builder.AppendLine("Quand l'utilisateur mentionne Documents > CodexCLI-Test, il designe le dossier local " + _codexTestRoot + ".");
+                builder.AppendLine("Le provider local attendu est Ollama et le modele local selectionne est " + model + ".");
+                builder.AppendLine("N'utilise aucun modele cloud si l'agent te propose un autre modele.");
+                builder.AppendLine("Reponds toujours en francais, sauf si l'utilisateur demande explicitement une autre langue.");
+                builder.AppendLine("Par defaut, reste consultatif et attends un accord explicite avant toute modification.");
+                builder.AppendLine("Si le dernier message utilisateur contient un accord explicite comme 'accord', 'je confirme' ou 'vas-y', execute uniquement le plan immediatement precedent visible dans le contexte.");
+                builder.AppendLine("Ne modifie que le dossier ou le fichier explicitement cible par l'utilisateur.");
+                builder.AppendLine("Profil agent Kivrio Agent UI actif: " + runProfile.Label + ".");
+                builder.AppendLine(runProfile.DeveloperInstructions);
+                string custom = (systemPrompt ?? "").Trim();
+                if (!string.IsNullOrEmpty(custom))
+                {
+                    builder.AppendLine();
+                    builder.AppendLine("Instructions utilisateur de Kivrio Agent UI:");
+                    builder.AppendLine(custom);
+                }
+                builder.AppendLine();
+                builder.AppendLine("Message utilisateur:");
+                builder.Append(prompt ?? "");
+                return builder.ToString();
+            }
+
+            private string ExtractAnswer(string output)
+            {
+                string text = output ?? "";
+                if (_agent.Id != "opencode")
+                {
+                    return StripAnsi(text).Trim();
+                }
+
+                var parser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                var builder = new StringBuilder();
+                string normalized = text.Replace("\r", "");
+                string[] lines = normalized.Split('\n');
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string line = StripAnsi(lines[i]).Trim();
+                    if (string.IsNullOrEmpty(line) || line[0] != '{') continue;
+                    try
+                    {
+                        Dictionary<string, object> item = parser.DeserializeObject(line) as Dictionary<string, object>;
+                        if (item == null) continue;
+                        string type = GetStringValue(item, "type");
+                        Dictionary<string, object> part = GetDictionaryValue(item, "part");
+                        string partType = GetStringValue(part, "type");
+                        string content = GetStringValue(part, "text");
+                        if ((type == "text" || partType == "text") && !string.IsNullOrEmpty(content))
+                        {
+                            builder.Append(content);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                if (builder.Length > 0)
+                {
+                    return builder.ToString().Trim();
+                }
+                return StripAnsi(text).Trim();
+            }
+
+            private static string ToOpenCodeModel(string model)
+            {
+                string value = (model ?? "").Trim();
+                if (value.IndexOf("/", StringComparison.OrdinalIgnoreCase) >= 0) return value;
+                return "ollama/" + value;
+            }
+
+            private static string WindowsPathToWsl(string path)
+            {
+                string full = "";
+                try
+                {
+                    full = Path.GetFullPath(path ?? "");
+                }
+                catch
+                {
+                    full = path ?? "";
+                }
+                if (full.Length >= 3 && full[1] == ':' && (full[2] == '\\' || full[2] == '/'))
+                {
+                    char drive = char.ToLowerInvariant(full[0]);
+                    string rest = full.Substring(3).Replace('\\', '/');
+                    return "/mnt/" + drive + "/" + rest;
+                }
+                return full.Replace('\\', '/');
+            }
+
+            private static string BuildProcessError(ProcessCapture capture)
+            {
+                string error = StripAnsi(((capture.Error ?? "") + "\n" + (capture.Output ?? "")).Trim());
+                if (string.IsNullOrWhiteSpace(error))
+                {
+                    error = "code de sortie " + capture.ExitCode + ".";
+                }
+                return error.Trim();
+            }
+
+            private static Dictionary<string, object> GetDictionaryValue(Dictionary<string, object> dict, string key)
+            {
+                if (dict == null) return new Dictionary<string, object>();
+                object value;
+                return dict.TryGetValue(key, out value) && value is Dictionary<string, object>
+                    ? (Dictionary<string, object>)value
+                    : new Dictionary<string, object>();
+            }
+
+            private static string GetStringValue(Dictionary<string, object> dict, string key)
+            {
+                if (dict == null) return "";
+                object value;
+                return dict.TryGetValue(key, out value) && value != null ? Convert.ToString(value) : "";
+            }
+
+            private static string StripAnsi(string value)
+            {
+                return Regex.Replace(value ?? "", "\x1B\\[[0-?]*[ -/]*[@-~]", "");
+            }
+
+            private static int ReadWslTurnTimeoutMs(AgentRunProfile profile)
+            {
+                string secondsValue = (Environment.GetEnvironmentVariable("KIVRIO_WSL_AGENT_TIMEOUT_SECONDS") ?? "").Trim();
+                int seconds;
+                if (int.TryParse(secondsValue, out seconds) && seconds > 0)
+                {
+                    return Clamp(seconds * 1000, 60000, 3600000);
+                }
+                return Clamp((profile ?? AgentRunProfile.FromValue(null)).DefaultTimeoutMs, 60000, 3600000);
+            }
+
+            private static int Clamp(int value, int min, int max)
+            {
+                if (value < min) return min;
+                if (value > max) return max;
+                return value;
+            }
+        }
+
+        private static WslAgentDetection DetectWslAgent(CodingAgentDefinition agent)
+        {
+            var detection = new WslAgentDetection();
+            string wslPath = FindWslCommand();
+            detection.WslPath = wslPath ?? "";
+            if (string.IsNullOrEmpty(wslPath) || !File.Exists(wslPath))
+            {
+                detection.Error = "wsl.exe introuvable.";
+                return detection;
+            }
+
+            string command = (agent.WslCommand ?? "").Trim();
+            string fallback = (agent.WslFallbackPath ?? "").Trim();
+            if (string.IsNullOrEmpty(command) && string.IsNullOrEmpty(fallback))
+            {
+                detection.Error = "Aucune commande WSL declaree pour " + agent.Label + ".";
+                return detection;
+            }
+
+            string script = BuildWslProbeScript(command, fallback);
+            string configuredDistro = (Environment.GetEnvironmentVariable("KIVRIO_AGENT_WSL_DISTRO") ?? "").Trim();
+            string[] distros = string.IsNullOrEmpty(configuredDistro)
+                ? new[] { "", "Ubuntu" }
+                : new[] { configuredDistro, "", "Ubuntu" };
+
+            var tried = new List<string>();
+            for (int i = 0; i < distros.Length; i++)
+            {
+                string distro = distros[i] ?? "";
+                string key = string.IsNullOrEmpty(distro) ? "<default>" : distro;
+                bool alreadyTried = false;
+                for (int j = 0; j < tried.Count; j++)
+                {
+                    if (string.Equals(tried[j], key, StringComparison.OrdinalIgnoreCase)) alreadyTried = true;
+                }
+                if (alreadyTried) continue;
+                tried.Add(key);
+
+                ProcessCapture result = RunWslProbe(wslPath, distro, script, 2500);
+                if (!result.Started)
+                {
+                    detection.Error = result.StartError;
+                    continue;
+                }
+
+                detection.WslFound = true;
+                detection.Distribution = string.IsNullOrEmpty(distro) ? "default" : distro;
+                if (result.TimedOut)
+                {
+                    detection.Error = "Detection WSL interrompue par timeout.";
+                    continue;
+                }
+
+                string output = (result.Output ?? "").Trim();
+                if (result.ExitCode == 0 && !string.IsNullOrEmpty(output))
+                {
+                    string[] lines = output.Replace("\r", "").Split('\n');
+                    detection.AgentFound = true;
+                    detection.CommandPath = lines[0].Trim();
+                    detection.Error = "";
+                    return detection;
+                }
+
+                string error = ((result.Error ?? "") + "\n" + output).Trim();
+                if (!string.IsNullOrEmpty(error)) detection.Error = error;
+            }
+
+            if (string.IsNullOrEmpty(detection.Error))
+            {
+                detection.Error = "Commande agent introuvable dans WSL.";
+            }
+            return detection;
+        }
+
+        private static string BuildWslProbeScript(string command, string fallback)
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(command))
+            {
+                parts.Add("command -v " + ShellSingleQuote(command) + " 2>/dev/null");
+            }
+            if (!string.IsNullOrWhiteSpace(fallback))
+            {
+                parts.Add("{ test -x " + ShellDoubleQuote(fallback) + " && printf '%s\\n' " + ShellDoubleQuote(fallback) + "; }");
+            }
+            return string.Join(" || ", parts.ToArray());
+        }
+
+        private static ProcessCapture RunWslProbe(string wslPath, string distro, string script, int timeoutMs)
+        {
+            string arguments = string.IsNullOrWhiteSpace(distro)
+                ? "-- bash -lc " + QuoteArg(script)
+                : "-d " + QuoteArg(distro) + " -- bash -lc " + QuoteArg(script);
+            return RunProcessCapture(wslPath, arguments, timeoutMs);
+        }
+
+        private static ProcessCapture RunProcessCapture(string fileName, string arguments, int timeoutMs)
+        {
+            var capture = new ProcessCapture { ExitCode = -1, Output = "", Error = "" };
+            try
+            {
+                var info = new ProcessStartInfo
+                {
+                    FileName = fileName,
+                    Arguments = arguments,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+
+                using (Process process = Process.Start(info))
+                {
+                    capture.Started = process != null;
+                    if (process == null) return capture;
+                    if (!process.WaitForExit(timeoutMs))
+                    {
+                        capture.TimedOut = true;
+                        try { process.Kill(); } catch { }
+                    }
+                    else
+                    {
+                        capture.ExitCode = process.ExitCode;
+                    }
+                    capture.Output = process.StandardOutput.ReadToEnd();
+                    capture.Error = process.StandardError.ReadToEnd();
+                }
+            }
+            catch (Exception ex)
+            {
+                capture.StartError = ex.Message;
+            }
+            return capture;
+        }
+
+        private static ProcessCapture RunProcessCaptureWithInput(string fileName, string arguments, string input, int timeoutMs)
+        {
+            var capture = new ProcessCapture { ExitCode = -1, Output = "", Error = "" };
+            try
+            {
+                var info = new ProcessStartInfo
+                {
+                    FileName = fileName,
+                    Arguments = arguments,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+
+                try
+                {
+                    info.StandardOutputEncoding = Encoding.UTF8;
+                    info.StandardErrorEncoding = Encoding.UTF8;
+                }
+                catch
+                {
+                }
+
+                using (Process process = Process.Start(info))
+                {
+                    capture.Started = process != null;
+                    if (process == null) return capture;
+
+                    string output = "";
+                    string error = "";
+                    var stdout = new Thread((ThreadStart)delegate
+                    {
+                        try { output = process.StandardOutput.ReadToEnd(); } catch { }
+                    });
+                    var stderr = new Thread((ThreadStart)delegate
+                    {
+                        try { error = process.StandardError.ReadToEnd(); } catch { }
+                    });
+                    stdout.IsBackground = true;
+                    stderr.IsBackground = true;
+                    stdout.Start();
+                    stderr.Start();
+
+                    try
+                    {
+                        process.StandardInput.Write(input ?? "");
+                        process.StandardInput.Close();
+                    }
+                    catch
+                    {
+                    }
+
+                    if (!process.WaitForExit(timeoutMs))
+                    {
+                        capture.TimedOut = true;
+                        try { process.Kill(); } catch { }
+                    }
+                    else
+                    {
+                        capture.ExitCode = process.ExitCode;
+                    }
+
+                    stdout.Join(2000);
+                    stderr.Join(2000);
+                    capture.Output = output ?? "";
+                    capture.Error = error ?? "";
+                }
+            }
+            catch (Exception ex)
+            {
+                capture.StartError = ex.Message;
+            }
+            return capture;
+        }
+
+        private static string FindWslCommand()
+        {
+            string configured = (Environment.GetEnvironmentVariable("KIVRIO_WSL_PATH") ?? "").Trim();
+            if (File.Exists(configured)) return configured;
+
+            string system = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            string[] candidates = new[]
+            {
+                Path.Combine(system, "wsl.exe"),
+                FindOnPath("wsl.exe")
+            };
+
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(candidates[i]) && File.Exists(candidates[i])) return candidates[i];
+            }
+            return null;
+        }
+
+        private static string ShellSingleQuote(string value)
+        {
+            return "'" + (value ?? "").Replace("'", "'\"'\"'") + "'";
+        }
+
+        private static string ShellDoubleQuote(string value)
+        {
+            return "\"" + (value ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
         }
 
         private void EnsureStartedLocked()
@@ -2742,6 +3534,7 @@ namespace KivrioAgentUi
                     id = NewId("c"),
                     title = CleanTitle(GetString(body, "title", "Nouvelle conversation"), "Nouvelle conversation", 64),
                     folderId = GetString(body, "folder_id", GetString(body, "folderId", null)),
+                    agent = CodingAgentCatalog.NormalizeId(GetString(body, "agent", GetString(body, "agentId", CodingAgentCatalog.DefaultId))),
                     createdAt = now,
                     updatedAt = now,
                     archived = 0,
@@ -2785,6 +3578,14 @@ namespace KivrioAgentUi
                 if (body.ContainsKey("title")) conversation.title = CleanTitle(GetString(body, "title", conversation.title), conversation.title, 64);
                 if (body.ContainsKey("folder_id")) conversation.folderId = GetNullableString(body, "folder_id");
                 if (body.ContainsKey("folderId")) conversation.folderId = GetNullableString(body, "folderId");
+                if (body.ContainsKey("agent") || body.ContainsKey("agentId"))
+                {
+                    string nextAgent = CodingAgentCatalog.NormalizeId(GetString(body, "agent", GetString(body, "agentId", conversation.agent)));
+                    if (conversation.messages == null || conversation.messages.Count == 0 || string.IsNullOrEmpty(conversation.agent))
+                    {
+                        conversation.agent = nextAgent;
+                    }
+                }
                 if (body.ContainsKey("archived")) conversation.archived = GetBool(body, "archived") ? 1 : 0;
                 conversation.updatedAt = NowMs();
                 Save();
@@ -2951,6 +3752,7 @@ namespace KivrioAgentUi
             if (data.attachments == null) data.attachments = new List<AttachmentRecord>();
             foreach (ConversationRecord conversation in data.conversations)
             {
+                conversation.agent = CodingAgentCatalog.NormalizeId(conversation.agent);
                 if (conversation.messages == null) conversation.messages = new List<MessageRecord>();
                 for (int i = 0; i < conversation.messages.Count; i++)
                 {
@@ -3004,6 +3806,8 @@ namespace KivrioAgentUi
                 { "id", conversation.id },
                 { "title", conversation.title },
                 { "folderId", conversation.folderId },
+                { "agent", CodingAgentCatalog.NormalizeId(conversation.agent) },
+                { "agentLabel", CodingAgentCatalog.FromValue(conversation.agent).Label },
                 { "createdAt", conversation.createdAt },
                 { "updatedAt", conversation.updatedAt },
                 { "archived", conversation.archived },
@@ -3200,6 +4004,7 @@ namespace KivrioAgentUi
         public string id { get; set; }
         public string title { get; set; }
         public string folderId { get; set; }
+        public string agent { get; set; }
         public long createdAt { get; set; }
         public long updatedAt { get; set; }
         public int archived { get; set; }
