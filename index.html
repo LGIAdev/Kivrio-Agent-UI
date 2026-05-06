@@ -115,7 +115,6 @@
           </svg>
           <select id="coding-agent-select" autocomplete="off" title="Agent de codage">
             <option value="codex">Codex</option>
-            <option value="claude">Claude Code</option>
             <option value="opencode">OpenCode</option>
           </select>
         </div>
@@ -185,12 +184,57 @@
     <div class="settings-card" role="document">
       <div class="settings-head">
         <div class="settings-tabs">
-          <button class="settings-tab active" type="button" aria-selected="true">Réglages</button>
+          <button class="settings-tab active" id="settings-tab-agents" type="button" aria-selected="true" data-settings-panel="agents">Agents de codage</button>
+          <button class="settings-tab" id="settings-tab-interface" type="button" aria-selected="false" data-settings-panel="interface">Interface</button>
         </div>
       </div>
       <div class="settings-body">
-        <div class="settings-section">
-          <div class="settings-title">Général</div>
+        <section class="settings-section" id="settings-panel-agents" data-settings-panel-content="agents">
+          <div class="settings-title">OpenCode</div>
+          <div class="settings-item">
+            <label class="settings-label" for="opencode-base-folder">Dossier Windows de base</label>
+            <div class="settings-field">
+              <select id="opencode-base-folder" class="settings-input">
+                <option value="documents">Documents</option>
+                <option value="desktop">Bureau</option>
+                <option value="pictures">Images</option>
+                <option value="downloads">Téléchargements</option>
+                <option value="custom">Chemin personnalisé</option>
+              </select>
+            </div>
+          </div>
+          <div class="settings-item" id="opencode-custom-base-row" hidden>
+            <label class="settings-label" for="opencode-custom-base">Chemin personnalisé</label>
+            <div class="settings-field">
+              <input id="opencode-custom-base" class="settings-input" type="text" spellcheck="false" placeholder="D:\Projets">
+            </div>
+          </div>
+          <div class="settings-item">
+            <label class="settings-label" for="opencode-work-directory">Répertoire de travail</label>
+            <div class="settings-field">
+              <input id="opencode-work-directory" class="settings-input" type="text" spellcheck="false" value="OpenCode">
+            </div>
+          </div>
+          <div class="settings-item settings-item-stack">
+            <label class="settings-label">Aperçu</label>
+            <div class="settings-path-preview">
+              <div class="settings-path-label">Chemin Windows</div>
+              <div class="settings-path-value" id="opencode-windows-preview">C:\Users\Utilisateur\Documents\OpenCode</div>
+              <div class="settings-path-label">Chemin WSL transmis à OpenCode</div>
+              <div class="settings-path-value" id="opencode-wsl-preview">/mnt/c/Users/Utilisateur/Documents/OpenCode</div>
+            </div>
+          </div>
+          <div class="settings-status" id="opencode-workspace-status" role="status" aria-live="polite">
+            Dossier OpenCode prêt à être vérifié.
+          </div>
+          <div class="settings-actions">
+            <button id="opencode-test-workspace" class="btn" type="button">Tester le dossier</button>
+            <button id="opencode-save-workspace" class="btn settings-primary" type="button">Enregistrer</button>
+          </div>
+        </section>
+
+        <section class="settings-section" id="settings-panel-interface" data-settings-panel-content="interface" hidden>
+          <div class="settings-title">Interface</div>
           <div class="settings-item">
             <label class="settings-label">Thème</label>
             <div class="settings-controls">
@@ -198,7 +242,7 @@
               <label class="radio"><input type="radio" name="theme" id="theme-light" value="light"> Clair</label>
             </div>
           </div>
-        </div>
+        </section>
       </div>
     </div>
   </div>

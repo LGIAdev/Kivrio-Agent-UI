@@ -2,6 +2,22 @@
 
 All notable changes to Kivrio Agent UI are documented in this file.
 
+## [2026.5.6] - 2026-05-06
+
+### Added
+- Added an OpenCode workspace settings panel under User > Settings.
+- Added configurable Windows base folders and custom paths for OpenCode workspaces.
+- Added server-side OpenCode workspace validation, creation, Windows-to-WSL path resolution, and protection against using the application folder as a workspace.
+
+### Changed
+- Routed OpenCode turns through the configured workspace instead of the Kivrio Agent UI application folder.
+- Strengthened OpenCode system instructions so new projects are created only inside the configured OpenCode workspace.
+- Kept Codex and model selection behavior unchanged while adding the OpenCode workspace pipeline.
+- Anonymized workspace previews in the settings UI while keeping the real path internal.
+
+### Removed
+- Removed the obsolete static Claude Code option from the agent selector markup.
+
 ## [2026.5.5] - 2026-05-05
 
 ### Added

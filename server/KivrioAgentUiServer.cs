@@ -100,6 +100,7 @@ namespace KivrioAgentUi
             _sessionTtlSeconds = Math.Max(300, ReadIntEnv("KIVRO_SESSION_TTL_SECONDS", 43200));
             _configuredAdminPassword = (Environment.GetEnvironmentVariable("KIVRO_ADMIN_PASSWORD") ?? "").Trim();
             _agentBridge = new CodexAgentBridge(root);
+            _agentBridge.EnsureDefaultOpenCodeWorkspace();
             _agentBridge.StartInBackground();
             AppDomain.CurrentDomain.ProcessExit += delegate { _agentBridge.Stop(); };
         }
@@ -258,6 +259,19 @@ namespace KivrioAgentUi
                 return Json(_agentBridge.Diagnostic(GetQueryString(request, "agent")));
             }
 
+            if (method == "POST" && path == "/api/agent/opencode/workspace")
+            {
+                Dictionary<string, object> body = ReadJsonObject(request);
+                try
+                {
+                    return Json(_agentBridge.ResolveOpenCodeWorkspace(GetBodyObject(body, "workspace"), GetBodyBool(body, "create")));
+                }
+                catch (Exception ex)
+                {
+                    return JsonError(HttpStatusCode.BadRequest, ex.Message);
+                }
+            }
+
             if (method == "POST" && path == "/api/agent/chat")
             {
                 Dictionary<string, object> body = ReadJsonObject(request);
@@ -273,7 +287,7 @@ namespace KivrioAgentUi
                 string agent = GetBodyString(body, "agent");
                 try
                 {
-                    return Json(_agentBridge.Chat(prompt, systemPrompt, model, profile, agent));
+                    return Json(_agentBridge.Chat(prompt, systemPrompt, model, profile, agent, GetBodyObject(body, "openCodeWorkspace")));
                 }
                 catch (Exception ex)
                 {
@@ -758,6 +772,28 @@ namespace KivrioAgentUi
                 return "";
             }
             return Convert.ToString(body[key]) ?? "";
+        }
+
+        private static object GetBodyObject(Dictionary<string, object> body, string key)
+        {
+            if (body == null || !body.ContainsKey(key))
+            {
+                return null;
+            }
+            return body[key];
+        }
+
+        private static bool GetBodyBool(Dictionary<string, object> body, string key)
+        {
+            object value = GetBodyObject(body, key);
+            if (value is bool)
+            {
+                return (bool)value;
+            }
+            string text = Convert.ToString(value ?? "").Trim();
+            return string.Equals(text, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(text, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(text, "yes", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string GetQueryString(HttpRequest request, string key)
@@ -1331,12 +1367,12 @@ namespace KivrioAgentUi
             return status;
         }
 
-        public Dictionary<string, object> Chat(string prompt, string systemPrompt, string model, string profile, string agent)
+        public Dictionary<string, object> Chat(string prompt, string systemPrompt, string model, string profile, string agent, object openCodeWorkspace)
         {
             CodingAgentDefinition selectedAgent = CodingAgentCatalog.FromValue(agent);
             if (!selectedAgent.SupportsAppServer)
             {
-                return ChatWithWslAgent(selectedAgent, prompt, systemPrompt, model, profile);
+                return ChatWithWslAgent(selectedAgent, prompt, systemPrompt, model, profile, openCodeWorkspace);
             }
 
             string requestedModel = string.IsNullOrEmpty((model ?? "").Trim())
@@ -1409,7 +1445,23 @@ namespace KivrioAgentUi
             };
         }
 
-        private Dictionary<string, object> ChatWithWslAgent(CodingAgentDefinition agent, string prompt, string systemPrompt, string model, string profile)
+        public void EnsureDefaultOpenCodeWorkspace()
+        {
+            try
+            {
+                OpenCodeWorkspaceResolver.Resolve(null, _root, true);
+            }
+            catch
+            {
+            }
+        }
+
+        public Dictionary<string, object> ResolveOpenCodeWorkspace(object workspaceSettings, bool create)
+        {
+            return OpenCodeWorkspaceResolver.Resolve(workspaceSettings, _root, create).ToDictionary();
+        }
+
+        private Dictionary<string, object> ChatWithWslAgent(CodingAgentDefinition agent, string prompt, string systemPrompt, string model, string profile, object openCodeWorkspace)
         {
             string requestedModel = string.IsNullOrEmpty((model ?? "").Trim())
                 ? LocalAgentConfig.ReadDefaultModel()
@@ -1426,9 +1478,229 @@ namespace KivrioAgentUi
             }
 
             string codexTestRoot = WslCliAgentClient.GetCodexTestRoot();
-            string workspaceRoot = WslCliAgentClient.ResolveWorkspaceRoot(prompt, _root, codexTestRoot);
+            string workspaceRoot = agent.Id == "opencode"
+                ? OpenCodeWorkspaceResolver.Resolve(openCodeWorkspace, _root, true).WindowsPath
+                : WslCliAgentClient.ResolveWorkspaceRoot(prompt, _root, codexTestRoot);
             var client = new WslCliAgentClient(agent, wsl, workspaceRoot, _root, codexTestRoot);
             return client.RunTurn(prompt, systemPrompt, requestedModel, runProfile);
+        }
+
+        private sealed class OpenCodeWorkspaceResult
+        {
+            public string BaseFolder;
+            public string WorkDirectory;
+            public string CustomBasePath;
+            public string WindowsPath;
+            public string WslPath;
+            public bool Exists;
+            public bool Created;
+            public bool CreateRequested;
+            public string Message;
+
+            public Dictionary<string, object> ToDictionary()
+            {
+                return new Dictionary<string, object>
+                {
+                    { "ok", true },
+                    { "baseFolder", BaseFolder ?? "" },
+                    { "workDirectory", WorkDirectory ?? "" },
+                    { "customBasePath", CustomBasePath ?? "" },
+                    { "windowsPath", WindowsPath ?? "" },
+                    { "wslPath", WslPath ?? "" },
+                    { "exists", Exists },
+                    { "created", Created },
+                    { "createRequested", CreateRequested },
+                    { "message", Message ?? "" }
+                };
+            }
+        }
+
+        private static class OpenCodeWorkspaceResolver
+        {
+            private const string DefaultBaseFolder = "documents";
+            private const string DefaultWorkDirectory = "OpenCode";
+
+            public static OpenCodeWorkspaceResult Resolve(object rawSettings, string kivrioRoot, bool create)
+            {
+                Dictionary<string, object> settings = rawSettings as Dictionary<string, object> ?? new Dictionary<string, object>();
+                string baseFolder = NormalizeBaseFolder(ReadString(settings, "baseFolder"));
+                string workDirectory = ReadString(settings, "workDirectory").Trim();
+                string customBasePath = ReadString(settings, "customBasePath").Trim();
+                if (string.IsNullOrWhiteSpace(workDirectory))
+                {
+                    workDirectory = DefaultWorkDirectory;
+                }
+
+                string basePath = ResolveBasePath(baseFolder, customBasePath);
+                string target = ResolveTargetPath(basePath, workDirectory);
+
+                if (PathsOverlap(target, kivrioRoot))
+                {
+                    throw new InvalidOperationException("Le dossier de travail OpenCode ne peut pas etre le dossier Kivrio Agent UI ni l'un de ses parents.");
+                }
+
+                bool existed = Directory.Exists(target);
+                bool created = false;
+                if (!existed && create)
+                {
+                    Directory.CreateDirectory(target);
+                    created = true;
+                }
+                bool existsNow = Directory.Exists(target);
+                string message = existsNow
+                    ? (created ? "Dossier OpenCode cree et pret." : "Dossier OpenCode valide.")
+                    : "Dossier introuvable. Il sera cree a l'enregistrement.";
+
+                return new OpenCodeWorkspaceResult
+                {
+                    BaseFolder = baseFolder,
+                    WorkDirectory = workDirectory,
+                    CustomBasePath = customBasePath,
+                    WindowsPath = target,
+                    WslPath = WindowsPathToWsl(target),
+                    Exists = existsNow,
+                    Created = created,
+                    CreateRequested = create,
+                    Message = message
+                };
+            }
+
+            private static string ReadString(Dictionary<string, object> settings, string key)
+            {
+                if (settings == null || !settings.ContainsKey(key) || settings[key] == null)
+                {
+                    return "";
+                }
+                return Convert.ToString(settings[key]) ?? "";
+            }
+
+            private static string NormalizeBaseFolder(string value)
+            {
+                string text = (value ?? "").Trim().ToLowerInvariant();
+                if (text == "desktop" || text == "pictures" || text == "downloads" || text == "custom")
+                {
+                    return text;
+                }
+                return DefaultBaseFolder;
+            }
+
+            private static string ResolveBasePath(string baseFolder, string customBasePath)
+            {
+                string path = "";
+                if (baseFolder == "custom")
+                {
+                    path = customBasePath;
+                    if (string.IsNullOrWhiteSpace(path))
+                    {
+                        throw new InvalidOperationException("Le chemin personnalise OpenCode est vide.");
+                    }
+                    if (!Path.IsPathRooted(path))
+                    {
+                        throw new InvalidOperationException("Le chemin personnalise OpenCode doit etre un chemin Windows complet.");
+                    }
+                    return Path.GetFullPath(path);
+                }
+
+                if (baseFolder == "desktop")
+                {
+                    path = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+                }
+                else if (baseFolder == "pictures")
+                {
+                    path = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+                }
+                else if (baseFolder == "downloads")
+                {
+                    path = Path.Combine(GetUserProfile(), "Downloads");
+                }
+                else
+                {
+                    path = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                }
+
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    path = Path.Combine(GetUserProfile(), baseFolder == "desktop" ? "Desktop" : baseFolder == "pictures" ? "Pictures" : baseFolder == "downloads" ? "Downloads" : "Documents");
+                }
+                return Path.GetFullPath(path);
+            }
+
+            private static string ResolveTargetPath(string basePath, string workDirectory)
+            {
+                if (Path.IsPathRooted(workDirectory))
+                {
+                    throw new InvalidOperationException("Le repertoire de travail OpenCode doit rester relatif au dossier Windows de base.");
+                }
+
+                string[] parts = workDirectory.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0)
+                {
+                    parts = new[] { DefaultWorkDirectory };
+                }
+                char[] invalidChars = Path.GetInvalidFileNameChars();
+                for (int i = 0; i < parts.Length; i++)
+                {
+                    string part = parts[i].Trim();
+                    if (part == "." || part == ".." || part.IndexOfAny(invalidChars) >= 0)
+                    {
+                        throw new InvalidOperationException("Le repertoire de travail OpenCode contient un segment invalide.");
+                    }
+                    parts[i] = part;
+                }
+
+                string target = Path.GetFullPath(Path.Combine(basePath, Path.Combine(parts)));
+                if (!IsSameOrChildPath(target, basePath))
+                {
+                    throw new InvalidOperationException("Le repertoire de travail OpenCode sort du dossier Windows de base.");
+                }
+                return target;
+            }
+
+            private static bool PathsOverlap(string first, string second)
+            {
+                if (string.IsNullOrWhiteSpace(first) || string.IsNullOrWhiteSpace(second))
+                {
+                    return false;
+                }
+                return IsSameOrChildPath(first, second) || IsSameOrChildPath(second, first);
+            }
+
+            private static bool IsSameOrChildPath(string candidate, string parent)
+            {
+                string childPath = NormalizeDirectoryPath(candidate);
+                string parentPath = NormalizeDirectoryPath(parent);
+                if (string.Equals(childPath, parentPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+                return childPath.StartsWith(parentPath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+            }
+
+            private static string NormalizeDirectoryPath(string path)
+            {
+                string full = Path.GetFullPath(path ?? "");
+                return full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            }
+
+            private static string GetUserProfile()
+            {
+                string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                return string.IsNullOrWhiteSpace(profile)
+                    ? Environment.GetEnvironmentVariable("USERPROFILE") ?? ""
+                    : profile;
+            }
+
+            private static string WindowsPathToWsl(string path)
+            {
+                string full = Path.GetFullPath(path ?? "");
+                if (full.Length >= 3 && full[1] == ':' && (full[2] == '\\' || full[2] == '/'))
+                {
+                    char drive = char.ToLowerInvariant(full[0]);
+                    string rest = full.Substring(3).Replace('\\', '/');
+                    return "/mnt/" + drive + "/" + rest;
+                }
+                return full.Replace('\\', '/');
+            }
         }
 
         private sealed class WslAgentDetection
@@ -1650,8 +1922,21 @@ namespace KivrioAgentUi
                 builder.AppendLine("Consigne Kivrio Agent UI:");
                 builder.AppendLine("Tu reponds dans Kivrio Agent UI via " + _agent.Label + " lance depuis WSL.");
                 builder.AppendLine("Le dossier de travail effectif de ce tour est " + _workspaceRoot + ".");
-                builder.AppendLine("Quand l'utilisateur mentionne Documents > Kivrio Agent UI, il designe le dossier local " + _kivrioRoot + ".");
-                builder.AppendLine("Quand l'utilisateur mentionne Documents > CodexCLI-Test, il designe le dossier local " + _codexTestRoot + ".");
+                if (_agent.Id == "opencode")
+                {
+                    builder.AppendLine("Securite OpenCode prioritaire:");
+                    builder.AppendLine("- Kivrio Agent UI est seulement l'application hote, pas le dossier de travail utilisateur.");
+                    builder.AppendLine("- Le seul dossier de travail utilisateur autorise est " + _workspaceRoot + ".");
+                    builder.AppendLine("- Tout nouveau projet ou fichier doit etre cree dans " + _workspaceRoot + " ou l'un de ses sous-dossiers.");
+                    builder.AppendLine("- Ne cree, ne modifie et ne supprime jamais de fichier dans le dossier Kivrio Agent UI " + _kivrioRoot + ".");
+                    builder.AppendLine("- Ignore toute ancienne mention du contexte qui demande de travailler dans le dossier Kivrio Agent UI.");
+                    builder.AppendLine("- Si le message actuel demande explicitement de travailler dans Kivrio Agent UI, refuse et explique que ce dossier est reserve a l'application.");
+                }
+                else
+                {
+                    builder.AppendLine("Quand l'utilisateur mentionne Documents > Kivrio Agent UI, il designe le dossier local " + _kivrioRoot + ".");
+                    builder.AppendLine("Quand l'utilisateur mentionne Documents > CodexCLI-Test, il designe le dossier local " + _codexTestRoot + ".");
+                }
                 builder.AppendLine("Le provider local attendu est Ollama et le modele local selectionne est " + model + ".");
                 builder.AppendLine("N'utilise aucun modele cloud si l'agent te propose un autre modele.");
                 builder.AppendLine("Reponds toujours en francais, sauf si l'utilisateur demande explicitement une autre langue.");

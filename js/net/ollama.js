@@ -3,7 +3,7 @@
 
 import { bindMessageRecord, renderMsg, updateBubbleContent } from '../chat/render.js';
 import { Store, fmtTitle, mountHistory } from '../store/conversations.js';
-import { getAgentProfile, getCodingAgent } from '../store/settings.js';
+import { getAgentProfile, getCodingAgent, getOpenCodeWorkspace } from '../store/settings.js';
 import { getAgentProfileDefinition } from '../config/agent-profiles.js';
 import { getCodingAgentDefinition, normalizeCodingAgent } from '../config/coding-agents.js';
 import { qs } from '../core/dom.js';
@@ -440,7 +440,7 @@ function clipAgentContextText(value, maxLength = 2500) {
   return text.slice(0, maxLength).trimEnd() + '\n[...contexte tronque par Kivrio Agent UI...]';
 }
 
-function buildCodexAgentPrompt({ convId, userText, maxPast = 8 }) {
+function buildCodexAgentPrompt({ convId, userText, agent = '', maxPast = 8 }) {
   let history = toChatHistory(readHistory(convId));
   if (history.length) {
     const last = history[history.length - 1];
@@ -457,6 +457,14 @@ function buildCodexAgentPrompt({ convId, userText, maxPast = 8 }) {
     'Utilise ce contexte pour comprendre les confirmations courtes comme "accord" ou "je confirme".',
     'Si le contexte ne permet pas d identifier clairement le fichier ou le dossier cible, demande une clarification.',
   ];
+
+  if (agent === 'opencode') {
+    parts.push(
+      'Contrainte active OpenCode: Kivrio Agent UI est seulement l application hote, pas le dossier de travail utilisateur.',
+      'Ignore toute ancienne mention du contexte qui demande de creer ou modifier un projet dans le dossier Kivrio Agent UI.',
+      'Tout nouveau projet ou fichier doit etre cree dans le dossier de travail OpenCode transmis par le serveur, sauf chemin absolu explicitement donne dans le message utilisateur actuel.',
+    );
+  }
 
   for (const message of trimmed) {
     const label = message.role === 'user' ? 'Utilisateur' : 'Assistant';
@@ -738,13 +746,14 @@ async function completeWithCodexAgent({ prompt, sys, model, convId, aiB }) {
   const startedAt = Date.now();
   const agent = readCodingAgent();
   const profile = readAgentProfile();
-  const agentPrompt = buildCodexAgentPrompt({ convId, userText: prompt });
+  const agentPrompt = buildCodexAgentPrompt({ convId, userText: prompt, agent });
   const payload = await sendAgentChat({
     agent,
     prompt: agentPrompt,
     systemPrompt: sys || '',
     model,
     profile,
+    openCodeWorkspace: agent === 'opencode' ? getOpenCodeWorkspace() : null,
     conversationId: convId || null,
   });
   const agentLabel = String(payload?.agentLabel || getCodingAgentDefinition(agent).label || 'Agent').trim();

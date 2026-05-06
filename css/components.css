@@ -373,8 +373,8 @@
 .settings-card{
   background:var(--panel); color:var(--text);
   border:1px solid var(--border);
-  border-radius:14px;
-  min-width:520px; max-width:min(92vw, 720px);
+  border-radius:12px;
+  min-width:560px; max-width:min(92vw, 780px);
   box-shadow:0 12px 40px rgba(0,0,0,.25);
 }
 .settings-head{ padding:14px 16px; border-bottom:1px solid var(--border); }
@@ -391,8 +391,80 @@
 .settings-section{ display:flex; flex-direction:column; gap:16px; }
 .settings-title{ font-weight:600; color:var(--muted); font-size:.9rem; }
 .settings-item{ display:grid; grid-template-columns:140px 1fr; gap:12px; align-items:center; }
+.settings-item-stack{ align-items:start; }
 .settings-controls{ display:flex; gap:16px; align-items:center; }
 .radio input{ margin-right:6px; }
+.settings-field{ min-width:0; }
+.settings-input{
+  width:100%;
+  min-height:40px;
+  border:1px solid var(--border);
+  border-radius:10px;
+  background:var(--surface-field);
+  color:var(--text);
+  padding:8px 10px;
+  font:inherit;
+}
+.settings-input:focus{
+  outline:2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset:1px;
+  border-color:var(--accent);
+}
+.settings-input::placeholder{ color:var(--muted); opacity:.8; }
+.settings-path-preview{
+  min-width:0;
+  padding:12px;
+  border:1px solid var(--border);
+  border-radius:10px;
+  background:var(--surface-field);
+}
+.settings-path-label{
+  color:var(--muted);
+  font-size:.8rem;
+  margin-bottom:4px;
+}
+.settings-path-label:not(:first-child){ margin-top:10px; }
+.settings-path-value{
+  overflow-wrap:anywhere;
+  color:var(--text);
+  font-family:Consolas, "Courier New", monospace;
+  font-size:.9rem;
+}
+.settings-status{
+  padding:10px 12px;
+  border:1px solid var(--border);
+  border-radius:10px;
+  background:var(--surface-field);
+  color:var(--muted);
+}
+.settings-status.ok{ color:var(--green); border-color:rgba(74,222,128,.35); }
+.settings-status.warn{ color:#fbbf24; border-color:rgba(251,191,36,.35); }
+.settings-status.error{ color:#f87171; border-color:rgba(248,113,113,.42); }
+.settings-actions{
+  display:flex;
+  justify-content:flex-end;
+  gap:10px;
+}
+.settings-primary{
+  background:var(--accent);
+  border-color:var(--accent);
+  color:#fff;
+}
+@media (max-width:640px){
+  .settings-card{
+    min-width:0;
+    width:min(92vw, 780px);
+  }
+  .settings-item{
+    grid-template-columns:1fr;
+  }
+  .settings-actions{
+    justify-content:stretch;
+  }
+  .settings-actions .btn{
+    flex:1;
+  }
+}
 
 /* ===================== 4) Branding / Sidebar ====================== */
 .brand-left{ display:flex; align-items:center; gap:6px; line-height:1; }
@@ -546,23 +618,33 @@
 }
 
 :root[data-theme="dark"] #model-select,
-:root[data-theme="dark"] #agent-profile-select{ color-scheme: dark; }
+:root[data-theme="dark"] #agent-profile-select,
+:root[data-theme="dark"] #coding-agent-select,
+:root[data-theme="dark"] .settings-input{ color-scheme: dark; }
 
 /* Fallback si non supporté */
 @supports not (color-scheme: dark){
   :root[data-theme="dark"] #model-select,
-  :root[data-theme="dark"] #agent-profile-select{
+  :root[data-theme="dark"] #agent-profile-select,
+  :root[data-theme="dark"] #coding-agent-select,
+  :root[data-theme="dark"] .settings-input{
     background:#0f172a; color:#e5e7eb;
     border:1px solid #334155; border-radius:8px;
   }
   :root[data-theme="dark"] #model-select:focus,
-  :root[data-theme="dark"] #agent-profile-select:focus{
+  :root[data-theme="dark"] #agent-profile-select:focus,
+  :root[data-theme="dark"] #coding-agent-select:focus,
+  :root[data-theme="dark"] .settings-input:focus{
     outline:none; box-shadow:0 0 0 2px rgba(59,130,246,.35); border-color:#60a5fa;
   }
   :root[data-theme="dark"] #model-select option,
   :root[data-theme="dark"] #model-select optgroup,
   :root[data-theme="dark"] #agent-profile-select option,
-  :root[data-theme="dark"] #agent-profile-select optgroup{
+  :root[data-theme="dark"] #agent-profile-select optgroup,
+  :root[data-theme="dark"] #coding-agent-select option,
+  :root[data-theme="dark"] #coding-agent-select optgroup,
+  :root[data-theme="dark"] .settings-input option,
+  :root[data-theme="dark"] .settings-input optgroup{
     background:#0f172a; color:#e5e7eb;
   }
 }

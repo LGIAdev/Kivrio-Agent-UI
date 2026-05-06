@@ -5,10 +5,26 @@ import { DEFAULT_CODING_AGENT, normalizeCodingAgent } from '../config/coding-age
 const KEY = 'kivrio_settings_v1';
 const LEGACY_KEY = 'kivro_settings_v1';
 const LEGACY_MODEL_KEY = 'ollamaModel';
+const DEFAULT_OPENCODE_WORKSPACE = Object.freeze({
+  baseFolder: 'documents',
+  workDirectory: 'OpenCode',
+  customBasePath: '',
+});
 
 // Lecture sûre localStorage
 const getLS = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const setLS = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+
+function normalizeOpenCodeWorkspace(value) {
+  const raw = value && typeof value === 'object' ? value : {};
+  const allowedBaseFolders = new Set(['documents', 'desktop', 'pictures', 'downloads', 'custom']);
+  const baseFolder = allowedBaseFolders.has(String(raw.baseFolder || '').trim().toLowerCase())
+    ? String(raw.baseFolder).trim().toLowerCase()
+    : DEFAULT_OPENCODE_WORKSPACE.baseFolder;
+  const workDirectory = String(raw.workDirectory || '').trim() || DEFAULT_OPENCODE_WORKSPACE.workDirectory;
+  const customBasePath = String(raw.customBasePath || '').trim();
+  return { baseFolder, workDirectory, customBasePath };
+}
 
 function readSettingsJson(preferredKey = KEY) {
   const raw = getLS(preferredKey);
@@ -29,6 +45,7 @@ const initial = (() => {
       ollama_url: 'http://127.0.0.1:11434',
       agent_profile: DEFAULT_AGENT_PROFILE,
       coding_agent: DEFAULT_CODING_AGENT,
+      opencode_workspace: DEFAULT_OPENCODE_WORKSPACE,
     };
     const st = Object.assign(base, json);
     // Fallback : si pas de modèle en state, lire ancienne clé 'ollamaModel'
@@ -38,6 +55,7 @@ const initial = (() => {
     }
     st.agent_profile = normalizeAgentProfile(st.agent_profile);
     st.coding_agent = normalizeCodingAgent(st.coding_agent);
+    st.opencode_workspace = normalizeOpenCodeWorkspace(st.opencode_workspace);
     return st;
   } catch {
     // Fallback dur si JSON cassé
@@ -46,7 +64,8 @@ const initial = (() => {
       model: legacy || null,
       ollama_url: 'http://127.0.0.1:11434',
       agent_profile: DEFAULT_AGENT_PROFILE,
-      coding_agent: DEFAULT_CODING_AGENT
+      coding_agent: DEFAULT_CODING_AGENT,
+      opencode_workspace: DEFAULT_OPENCODE_WORKSPACE
     };
   }
 })();
@@ -89,6 +108,16 @@ export const setCodingAgent = (agent) => {
   document.dispatchEvent(new CustomEvent('settings:coding-agent-changed', { detail: state.coding_agent }));
 };
 
+export const getOpenCodeWorkspace = () => ({ ...normalizeOpenCodeWorkspace(state.opencode_workspace) });
+
+export const setOpenCodeWorkspace = (settings) => {
+  state.opencode_workspace = normalizeOpenCodeWorkspace(settings);
+  persist();
+  document.dispatchEvent(new CustomEvent('settings:opencode-workspace-changed', {
+    detail: { ...state.opencode_workspace },
+  }));
+};
+
 export const getOllamaUrl = () => state.ollama_url.replace(/\/+$/, '');
 
 export const setOllamaUrl = (u) => {
@@ -120,6 +149,13 @@ window.addEventListener?.('storage', (ev) => {
       if (nextAgent !== state.coding_agent) {
         state.coding_agent = nextAgent;
         document.dispatchEvent(new CustomEvent('settings:coding-agent-changed', { detail: state.coding_agent }));
+      }
+      const nextWorkspace = normalizeOpenCodeWorkspace(next.opencode_workspace);
+      if (JSON.stringify(nextWorkspace) !== JSON.stringify(state.opencode_workspace)) {
+        state.opencode_workspace = nextWorkspace;
+        document.dispatchEvent(new CustomEvent('settings:opencode-workspace-changed', {
+          detail: { ...state.opencode_workspace },
+        }));
       }
     } catch {}
   }

@@ -152,6 +152,16 @@ export function getAgentDiagnostic(agent) {
   return request('/api/agent/diagnostic' + suffix);
 }
 
+export function resolveOpenCodeWorkspace(workspace, options = {}) {
+  return request('/api/agent/opencode/workspace', {
+    method: 'POST',
+    body: {
+      workspace: workspace || {},
+      create: Boolean(options.create),
+    },
+  });
+}
+
 export function sendAgentChat(payload) {
   return request('/api/agent/chat', {
     method: 'POST',
