@@ -85,7 +85,7 @@
       aria-orientation="vertical"
     ></div>
 
-    <main class="main">
+    <main class="main composer-idle">
     <button
       class="sidebar-toggle sidebar-toggle-open"
       id="sidebar-toggle-open"
@@ -114,6 +114,7 @@
             <path d="M8.25 12h7.5M12 8.25v7.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
           <select id="coding-agent-select" autocomplete="off" title="Agent de codage">
+            <option value="claude">Claude Code</option>
             <option value="codex">Codex</option>
             <option value="opencode">OpenCode</option>
           </select>
@@ -190,46 +191,106 @@
       </div>
       <div class="settings-body">
         <section class="settings-section" id="settings-panel-agents" data-settings-panel-content="agents">
-          <div class="settings-title">OpenCode</div>
+          <div class="settings-title">Agent de codage</div>
           <div class="settings-item">
-            <label class="settings-label" for="opencode-base-folder">Dossier Windows de base</label>
+            <label class="settings-label" for="settings-coding-agent-select">Agent</label>
             <div class="settings-field">
-              <select id="opencode-base-folder" class="settings-input">
-                <option value="documents">Documents</option>
-                <option value="desktop">Bureau</option>
-                <option value="pictures">Images</option>
-                <option value="downloads">Téléchargements</option>
-                <option value="custom">Chemin personnalisé</option>
+              <select id="settings-coding-agent-select" class="settings-input">
+                <option value="claude">Claude Code</option>
+                <option value="codex">Codex</option>
+                <option value="opencode">OpenCode</option>
               </select>
             </div>
           </div>
-          <div class="settings-item" id="opencode-custom-base-row" hidden>
-            <label class="settings-label" for="opencode-custom-base">Chemin personnalisé</label>
-            <div class="settings-field">
-              <input id="opencode-custom-base" class="settings-input" type="text" spellcheck="false" placeholder="D:\Projets">
+
+          <div class="agent-settings-panel" id="agent-settings-codex" data-agent-settings-panel="codex">
+            <div class="settings-status ok">Codex utilise le pont local Ollama app-server.</div>
+          </div>
+
+          <div class="agent-settings-panel" id="agent-settings-opencode" data-agent-settings-panel="opencode" hidden>
+            <div class="settings-title">OpenCode</div>
+            <div class="settings-item">
+              <label class="settings-label" for="opencode-base-folder">Dossier Windows de base</label>
+              <div class="settings-field">
+                <select id="opencode-base-folder" class="settings-input">
+                  <option value="documents">Documents</option>
+                  <option value="desktop">Bureau</option>
+                  <option value="pictures">Images</option>
+                  <option value="downloads">Téléchargements</option>
+                  <option value="custom">Chemin personnalisé</option>
+                </select>
+              </div>
+            </div>
+            <div class="settings-item" id="opencode-custom-base-row" hidden>
+              <label class="settings-label" for="opencode-custom-base">Chemin personnalisé</label>
+              <div class="settings-field">
+                <input id="opencode-custom-base" class="settings-input" type="text" spellcheck="false" placeholder="D:\Projets">
+              </div>
+            </div>
+            <div class="settings-item">
+              <label class="settings-label" for="opencode-work-directory">Répertoire de travail</label>
+              <div class="settings-field">
+                <input id="opencode-work-directory" class="settings-input" type="text" spellcheck="false" value="OpenCode">
+              </div>
+            </div>
+            <div class="settings-item settings-item-stack">
+              <label class="settings-label">Aperçu</label>
+              <div class="settings-path-preview">
+                <div class="settings-path-label">Chemin Windows</div>
+                <div class="settings-path-value" id="opencode-windows-preview">C:\Users\Utilisateur\Documents\OpenCode</div>
+                <div class="settings-path-label">Chemin WSL transmis à OpenCode</div>
+                <div class="settings-path-value" id="opencode-wsl-preview">/mnt/c/Users/Utilisateur/Documents/OpenCode</div>
+              </div>
+            </div>
+            <div class="settings-status" id="opencode-workspace-status" role="status" aria-live="polite">
+              Dossier OpenCode prêt à être vérifié.
+            </div>
+            <div class="settings-actions">
+              <button id="opencode-test-workspace" class="btn" type="button">Tester le dossier</button>
+              <button id="opencode-save-workspace" class="btn settings-primary" type="button">Enregistrer</button>
             </div>
           </div>
-          <div class="settings-item">
-            <label class="settings-label" for="opencode-work-directory">Répertoire de travail</label>
-            <div class="settings-field">
-              <input id="opencode-work-directory" class="settings-input" type="text" spellcheck="false" value="OpenCode">
+
+          <div class="agent-settings-panel" id="agent-settings-claude" data-agent-settings-panel="claude" hidden>
+            <div class="settings-title">Claude Code</div>
+            <div class="settings-item">
+              <label class="settings-label" for="claude-base-folder">Dossier Windows de base</label>
+              <div class="settings-field">
+                <select id="claude-base-folder" class="settings-input">
+                  <option value="documents">Documents</option>
+                  <option value="desktop">Bureau</option>
+                  <option value="pictures">Images</option>
+                  <option value="downloads">Téléchargements</option>
+                  <option value="custom">Chemin personnalisé</option>
+                </select>
+              </div>
             </div>
-          </div>
-          <div class="settings-item settings-item-stack">
-            <label class="settings-label">Aperçu</label>
-            <div class="settings-path-preview">
-              <div class="settings-path-label">Chemin Windows</div>
-              <div class="settings-path-value" id="opencode-windows-preview">C:\Users\Utilisateur\Documents\OpenCode</div>
-              <div class="settings-path-label">Chemin WSL transmis à OpenCode</div>
-              <div class="settings-path-value" id="opencode-wsl-preview">/mnt/c/Users/Utilisateur/Documents/OpenCode</div>
+            <div class="settings-item" id="claude-custom-base-row" hidden>
+              <label class="settings-label" for="claude-custom-base">Chemin personnalisé</label>
+              <div class="settings-field">
+                <input id="claude-custom-base" class="settings-input" type="text" spellcheck="false" placeholder="D:\Projets">
+              </div>
             </div>
-          </div>
-          <div class="settings-status" id="opencode-workspace-status" role="status" aria-live="polite">
-            Dossier OpenCode prêt à être vérifié.
-          </div>
-          <div class="settings-actions">
-            <button id="opencode-test-workspace" class="btn" type="button">Tester le dossier</button>
-            <button id="opencode-save-workspace" class="btn settings-primary" type="button">Enregistrer</button>
+            <div class="settings-item">
+              <label class="settings-label" for="claude-work-directory">Répertoire de travail</label>
+              <div class="settings-field">
+                <input id="claude-work-directory" class="settings-input" type="text" spellcheck="false" value="Claude">
+              </div>
+            </div>
+            <div class="settings-item settings-item-stack">
+              <label class="settings-label">Aperçu</label>
+              <div class="settings-path-preview">
+                <div class="settings-path-label">Chemin Windows</div>
+                <div class="settings-path-value" id="claude-windows-preview">C:\Users\Utilisateur\Documents\Claude</div>
+              </div>
+            </div>
+            <div class="settings-status" id="claude-workspace-status" role="status" aria-live="polite">
+              Dossier Claude prêt à être vérifié.
+            </div>
+            <div class="settings-actions">
+              <button id="claude-test-workspace" class="btn" type="button">Tester le dossier</button>
+              <button id="claude-save-workspace" class="btn settings-primary" type="button">Enregistrer</button>
+            </div>
           </div>
         </section>
 

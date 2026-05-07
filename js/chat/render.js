@@ -1113,6 +1113,13 @@ export function ensureLog(){
   return log;
 }
 
+function setComposerActive(active){
+  const main = qs('.main');
+  if(!main) return;
+  main.classList.toggle('composer-active', Boolean(active));
+  main.classList.toggle('composer-idle', !active);
+}
+
 function formatBytes(bytes){
   const value = Number(bytes || 0);
   if (value < 1024) return `${value} o`;
@@ -1212,6 +1219,7 @@ function appendMessageAttachments(container, attachments){
  * ----------------------------------------------------------- */
 export function renderMsg(role, text, options = {}){
   const log = ensureLog();
+  setComposerActive(true);
 
   const row = document.createElement('div');
   row.className = 'msg ' + (role === 'user' ? 'user' : 'assistant');
@@ -1269,6 +1277,7 @@ export function clearChat(){
   cancelActiveMessageEdit();
   const log = qs('#chat-log');
   if (log) log.innerHTML = '';
+  setComposerActive(false);
   try{ window.kivrioClearPendingUploads?.(); }catch(_){ }
   const ta = qs('#composer-input');
   if (ta){ ta.value = ''; ta.focus(); }

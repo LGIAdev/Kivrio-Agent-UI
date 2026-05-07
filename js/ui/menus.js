@@ -1,18 +1,43 @@
 import { qs } from '../core/dom.js';
-import { getOpenCodeWorkspace, setOpenCodeWorkspace } from '../store/settings.js';
+import { CODING_AGENTS } from '../config/coding-agents.js';
+import {
+  getClaudeWorkspace,
+  getCodingAgent,
+  getOpenCodeWorkspace,
+  setClaudeWorkspace,
+  setCodingAgent,
+  setOpenCodeWorkspace,
+} from '../store/settings.js';
 import {
   loadSystemPrompt,
   readSys,
   saveSystemPromptValue,
 } from '../net/ollama.js';
-import { resolveOpenCodeWorkspace } from '../net/conversationsApi.js';
+import { resolveCodingAgentWorkspace } from '../net/conversationsApi.js';
 
-const OPENCODE_BASE_LABELS = {
+const BASE_FOLDER_LABELS = {
   documents: 'Documents',
   desktop: 'Desktop',
   pictures: 'Pictures',
   downloads: 'Downloads',
   custom: '',
+};
+
+const WORKSPACE_AGENTS = {
+  opencode: {
+    label: 'OpenCode',
+    defaultDirectory: 'OpenCode',
+    getSettings: getOpenCodeWorkspace,
+    setSettings: setOpenCodeWorkspace,
+    showWslPreview: true,
+  },
+  claude: {
+    label: 'Claude Code',
+    defaultDirectory: 'Claude',
+    getSettings: getClaudeWorkspace,
+    setSettings: setClaudeWorkspace,
+    showWslPreview: false,
+  },
 };
 
 export function wireUserMenu(){
@@ -31,15 +56,17 @@ export function wireSettingsModal(){
   const open = (e)=>{
     if(e) e.preventDefault();
     qs('#user-menu')?.classList.remove('open');
-    populateOpenCodeWorkspaceSettings();
+    populateAgentSettings();
     sm.style.display='flex';
-    refreshOpenCodeWorkspaceStatus(false).catch(() => {});
+    refreshCurrentWorkspaceStatus(false).catch(() => {});
   };
   se.addEventListener('click', open);
   se.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' '){ open(e); } });
   sm.addEventListener('click', (e)=>{ if(e.target===sm) sm.style.display='none'; });
   wireSettingsTabs();
-  wireOpenCodeWorkspaceSettings();
+  wireSettingsAgentChoice();
+  wireWorkspaceSettings('opencode');
+  wireWorkspaceSettings('claude');
 }
 
 function wireSettingsTabs(){
@@ -61,71 +88,123 @@ function wireSettingsTabs(){
   });
 }
 
-function wireOpenCodeWorkspaceSettings(){
-  const base = qs('#opencode-base-folder');
-  const custom = qs('#opencode-custom-base');
-  const directory = qs('#opencode-work-directory');
-  const test = qs('#opencode-test-workspace');
-  const save = qs('#opencode-save-workspace');
+function wireSettingsAgentChoice(){
+  const selector = qs('#settings-coding-agent-select');
+  if(!selector) return;
+  mountSettingsAgentOptions(selector);
+  selector.addEventListener('change', async () => {
+    const agent = String(selector.value || '').trim() || 'codex';
+    setCodingAgent(agent);
+    syncAgentSettingsPanels(agent);
+    await refreshCurrentWorkspaceStatus(false).catch(() => {});
+  });
+  document.addEventListener('settings:coding-agent-changed', () => {
+    selector.value = getCodingAgent();
+    syncAgentSettingsPanels(selector.value);
+  });
+}
+
+function mountSettingsAgentOptions(selector){
+  selector.replaceChildren();
+  for(const agent of CODING_AGENTS){
+    const option = document.createElement('option');
+    option.value = agent.id;
+    option.textContent = agent.label;
+    selector.appendChild(option);
+  }
+}
+
+function wireWorkspaceSettings(agent){
+  const base = qs(`#${agent}-base-folder`);
+  const custom = qs(`#${agent}-custom-base`);
+  const directory = qs(`#${agent}-work-directory`);
+  const test = qs(`#${agent}-test-workspace`);
+  const save = qs(`#${agent}-save-workspace`);
   if(!base || !directory || !test || !save) return;
 
   const update = () => {
-    syncOpenCodeCustomBaseVisibility();
-    renderOpenCodeWorkspacePreview();
-    setOpenCodeWorkspaceStatus('Dossier OpenCode prêt à être vérifié.', '');
+    syncCustomBaseVisibility(agent);
+    renderWorkspacePreview(agent);
+    setWorkspaceStatus(agent, `Dossier ${WORKSPACE_AGENTS[agent].label} pret a etre verifie.`, '');
   };
 
   base.addEventListener('change', update);
   custom?.addEventListener('input', update);
   directory.addEventListener('input', update);
   test.addEventListener('click', async () => {
-    try { await refreshOpenCodeWorkspaceStatus(false); } catch (_) {}
+    try { await refreshWorkspaceStatus(agent, false); } catch (_) {}
   });
   save.addEventListener('click', async () => {
-    const settings = readOpenCodeWorkspaceForm();
+    const settings = readWorkspaceForm(agent);
     try{
-      const result = await refreshOpenCodeWorkspaceStatus(true);
-      setOpenCodeWorkspace(settings);
-      renderOpenCodeWorkspacePreview(result);
+      const result = await refreshWorkspaceStatus(agent, true);
+      WORKSPACE_AGENTS[agent].setSettings(settings);
+      renderWorkspacePreview(agent, result);
     }catch(_){
     }
   });
 }
 
-function populateOpenCodeWorkspaceSettings(){
-  const settings = getOpenCodeWorkspace();
-  const base = qs('#opencode-base-folder');
-  const custom = qs('#opencode-custom-base');
-  const directory = qs('#opencode-work-directory');
-  if(base) base.value = settings.baseFolder || 'documents';
-  if(custom) custom.value = settings.customBasePath || '';
-  if(directory) directory.value = settings.workDirectory || 'OpenCode';
-  syncOpenCodeCustomBaseVisibility();
-  renderOpenCodeWorkspacePreview();
-  setOpenCodeWorkspaceStatus('Dossier OpenCode prêt à être vérifié.', '');
+function populateAgentSettings(){
+  const selector = qs('#settings-coding-agent-select');
+  if(selector){
+    mountSettingsAgentOptions(selector);
+    selector.value = getCodingAgent();
+  }
+  populateWorkspaceSettings('opencode');
+  populateWorkspaceSettings('claude');
+  syncAgentSettingsPanels(getCodingAgent());
 }
 
-function readOpenCodeWorkspaceForm(){
-  const base = qs('#opencode-base-folder');
-  const custom = qs('#opencode-custom-base');
-  const directory = qs('#opencode-work-directory');
+function populateWorkspaceSettings(agent){
+  const config = WORKSPACE_AGENTS[agent];
+  const settings = config.getSettings();
+  const base = qs(`#${agent}-base-folder`);
+  const custom = qs(`#${agent}-custom-base`);
+  const directory = qs(`#${agent}-work-directory`);
+  if(base) base.value = settings.baseFolder || 'documents';
+  if(custom) custom.value = settings.customBasePath || '';
+  if(directory) directory.value = settings.workDirectory || config.defaultDirectory;
+  syncCustomBaseVisibility(agent);
+  renderWorkspacePreview(agent);
+  setWorkspaceStatus(agent, `Dossier ${config.label} pret a etre verifie.`, '');
+}
+
+function syncAgentSettingsPanels(agent){
+  const value = String(agent || 'codex').trim();
+  document.querySelectorAll('[data-agent-settings-panel]').forEach((panel) => {
+    panel.hidden = panel.getAttribute('data-agent-settings-panel') !== value;
+  });
+}
+
+function currentWorkspaceAgent(){
+  const selector = qs('#settings-coding-agent-select');
+  const value = String(selector?.value || getCodingAgent() || '').trim();
+  return WORKSPACE_AGENTS[value] ? value : '';
+}
+
+function readWorkspaceForm(agent){
+  const config = WORKSPACE_AGENTS[agent];
+  const base = qs(`#${agent}-base-folder`);
+  const custom = qs(`#${agent}-custom-base`);
+  const directory = qs(`#${agent}-work-directory`);
   return {
     baseFolder: String(base?.value || 'documents').trim(),
     customBasePath: String(custom?.value || '').trim(),
-    workDirectory: String(directory?.value || '').trim() || 'OpenCode',
+    workDirectory: String(directory?.value || '').trim() || config.defaultDirectory,
   };
 }
 
-function syncOpenCodeCustomBaseVisibility(){
-  const settings = readOpenCodeWorkspaceForm();
-  const row = qs('#opencode-custom-base-row');
+function syncCustomBaseVisibility(agent){
+  const settings = readWorkspaceForm(agent);
+  const row = qs(`#${agent}-custom-base-row`);
   if(row) row.hidden = settings.baseFolder !== 'custom';
 }
 
-function renderOpenCodeWorkspacePreview(result = null){
-  const settings = readOpenCodeWorkspaceForm();
-  const windows = qs('#opencode-windows-preview');
-  const wsl = qs('#opencode-wsl-preview');
+function renderWorkspacePreview(agent, result = null){
+  const settings = readWorkspaceForm(agent);
+  const windows = qs(`#${agent}-windows-preview`);
+  const wsl = qs(`#${agent}-wsl-preview`);
   if(windows) windows.textContent = anonymizeWindowsPath(result?.windowsPath) || buildWindowsPreview(settings);
   if(wsl) wsl.textContent = anonymizeWslPath(result?.wslPath) || buildWslPreview(settings);
 }
@@ -133,10 +212,10 @@ function renderOpenCodeWorkspacePreview(result = null){
 function buildWindowsPreview(settings){
   const workDirectory = settings.workDirectory || 'OpenCode';
   if(settings.baseFolder === 'custom'){
-    const customBase = settings.customBasePath || 'Chemin personnalisé';
+    const customBase = settings.customBasePath || 'Chemin personnalise';
     return `${customBase.replace(/[\\\/]+$/, '')}\\${workDirectory}`;
   }
-  const label = OPENCODE_BASE_LABELS[settings.baseFolder] || OPENCODE_BASE_LABELS.documents;
+  const label = BASE_FOLDER_LABELS[settings.baseFolder] || BASE_FOLDER_LABELS.documents;
   return `C:\\Users\\Utilisateur\\${label}\\${workDirectory}`;
 }
 
@@ -159,29 +238,36 @@ function anonymizeWslPath(path){
   return value.replace(/^(\/mnt\/[a-z]\/Users\/)[^/]+(\/.*)$/i, '$1Utilisateur$2');
 }
 
-function setOpenCodeWorkspaceStatus(message, type){
-  const status = qs('#opencode-workspace-status');
+function setWorkspaceStatus(agent, message, type){
+  const status = qs(`#${agent}-workspace-status`);
   if(!status) return;
   status.textContent = message;
   status.classList.remove('ok', 'warn', 'error');
   if(type) status.classList.add(type);
 }
 
-async function refreshOpenCodeWorkspaceStatus(create){
-  const settings = readOpenCodeWorkspaceForm();
-  setOpenCodeWorkspaceStatus(create ? 'Création du dossier OpenCode...' : 'Vérification du dossier OpenCode...', '');
+async function refreshCurrentWorkspaceStatus(create){
+  const agent = currentWorkspaceAgent();
+  if(!agent) return null;
+  return refreshWorkspaceStatus(agent, create);
+}
+
+async function refreshWorkspaceStatus(agent, create){
+  const config = WORKSPACE_AGENTS[agent];
+  const settings = readWorkspaceForm(agent);
+  setWorkspaceStatus(agent, create ? `Creation du dossier ${config.label}...` : `Verification du dossier ${config.label}...`, '');
   try{
-    const result = await resolveOpenCodeWorkspace(settings, { create });
-    renderOpenCodeWorkspacePreview(result);
+    const result = await resolveCodingAgentWorkspace(agent, settings, { create });
+    renderWorkspacePreview(agent, result);
     if(result?.exists){
-      setOpenCodeWorkspaceStatus(result?.message || 'Dossier OpenCode valide.', 'ok');
+      setWorkspaceStatus(agent, result?.message || `Dossier ${config.label} valide.`, 'ok');
     }else{
-      setOpenCodeWorkspaceStatus(result?.message || 'Dossier introuvable. Il sera créé à l’enregistrement.', 'warn');
+      setWorkspaceStatus(agent, result?.message || 'Dossier introuvable. Il sera cree a l enregistrement.', 'warn');
     }
     return result;
   }catch(err){
-    const message = err?.message || 'Dossier OpenCode invalide.';
-    setOpenCodeWorkspaceStatus(message, 'error');
+    const message = err?.message || `Dossier ${config.label} invalide.`;
+    setWorkspaceStatus(agent, message, 'error');
     throw err;
   }
 }

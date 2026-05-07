@@ -101,6 +101,7 @@ namespace KivrioAgentUi
             _configuredAdminPassword = (Environment.GetEnvironmentVariable("KIVRO_ADMIN_PASSWORD") ?? "").Trim();
             _agentBridge = new CodexAgentBridge(root);
             _agentBridge.EnsureDefaultOpenCodeWorkspace();
+            _agentBridge.EnsureDefaultClaudeWorkspace();
             _agentBridge.StartInBackground();
             AppDomain.CurrentDomain.ProcessExit += delegate { _agentBridge.Stop(); };
         }
@@ -272,6 +273,19 @@ namespace KivrioAgentUi
                 }
             }
 
+            if (method == "POST" && path == "/api/agent/claude/workspace")
+            {
+                Dictionary<string, object> body = ReadJsonObject(request);
+                try
+                {
+                    return Json(_agentBridge.ResolveClaudeWorkspace(GetBodyObject(body, "workspace"), GetBodyBool(body, "create")));
+                }
+                catch (Exception ex)
+                {
+                    return JsonError(HttpStatusCode.BadRequest, ex.Message);
+                }
+            }
+
             if (method == "POST" && path == "/api/agent/chat")
             {
                 Dictionary<string, object> body = ReadJsonObject(request);
@@ -287,7 +301,7 @@ namespace KivrioAgentUi
                 string agent = GetBodyString(body, "agent");
                 try
                 {
-                    return Json(_agentBridge.Chat(prompt, systemPrompt, model, profile, agent, GetBodyObject(body, "openCodeWorkspace")));
+                    return Json(_agentBridge.Chat(prompt, systemPrompt, model, profile, agent, GetBodyObject(body, "openCodeWorkspace"), GetBodyObject(body, "claudeWorkspace")));
                 }
                 catch (Exception ex)
                 {
@@ -1135,7 +1149,8 @@ namespace KivrioAgentUi
         private static readonly CodingAgentDefinition[] Agents = new[]
         {
             new CodingAgentDefinition("codex", "Codex CLI", "codex", "Ollama launch Codex CLI/app-server", true, "", ""),
-            new CodingAgentDefinition("opencode", "OpenCode", "opencode", "WSL OpenCode", false, "opencode", "$HOME/.opencode/bin/opencode")
+            new CodingAgentDefinition("opencode", "OpenCode", "opencode", "WSL OpenCode", false, "opencode", "$HOME/.opencode/bin/opencode"),
+            new CodingAgentDefinition("claude", "Claude Code", "claude", "Ollama launch Claude Code Windows", false, "", "")
         };
 
         public static CodingAgentDefinition FromValue(string value)
@@ -1156,6 +1171,7 @@ namespace KivrioAgentUi
             string id = (value ?? "").Trim().ToLowerInvariant();
             if (string.IsNullOrEmpty(id)) return DefaultId;
             if (id == "codex-cli" || id == "codex cli") return DefaultId;
+            if (id == "claude-code" || id == "claude code") return "claude";
             for (int i = 0; i < Agents.Length; i++)
             {
                 if (string.Equals(Agents[i].Id, id, StringComparison.OrdinalIgnoreCase))
@@ -1367,9 +1383,13 @@ namespace KivrioAgentUi
             return status;
         }
 
-        public Dictionary<string, object> Chat(string prompt, string systemPrompt, string model, string profile, string agent, object openCodeWorkspace)
+        public Dictionary<string, object> Chat(string prompt, string systemPrompt, string model, string profile, string agent, object openCodeWorkspace, object claudeWorkspace)
         {
             CodingAgentDefinition selectedAgent = CodingAgentCatalog.FromValue(agent);
+            if (selectedAgent.Id == "claude")
+            {
+                return ChatWithClaudeWindowsAgent(selectedAgent, prompt, systemPrompt, model, profile, claudeWorkspace);
+            }
             if (!selectedAgent.SupportsAppServer)
             {
                 return ChatWithWslAgent(selectedAgent, prompt, systemPrompt, model, profile, openCodeWorkspace);
@@ -1399,6 +1419,11 @@ namespace KivrioAgentUi
 
         private static Dictionary<string, object> UnsupportedAgentStatus(CodingAgentDefinition agent)
         {
+            if (agent.Id == "claude")
+            {
+                return ClaudeWindowsStatus(agent);
+            }
+
             string launcherPath = FindOllamaCommand();
             bool ollamaFound = !string.IsNullOrEmpty(launcherPath) && File.Exists(launcherPath);
             WslAgentDetection wsl = DetectWslAgent(agent);
@@ -1445,11 +1470,71 @@ namespace KivrioAgentUi
             };
         }
 
+        private static Dictionary<string, object> ClaudeWindowsStatus(CodingAgentDefinition agent)
+        {
+            string launcherPath = FindOllamaCommand();
+            string claudePath = FindClaudeCommandForOllamaLaunch();
+            bool ollamaFound = !string.IsNullOrEmpty(launcherPath) && File.Exists(launcherPath);
+            bool agentFound = !string.IsNullOrEmpty(claudePath) && File.Exists(claudePath);
+            bool ready = ollamaFound && agentFound;
+            string mode = ready ? "windows-ready" : (ollamaFound ? "windows-agent-missing" : "ollama-missing");
+            string message = ready
+                ? agent.Label + " detecte via Windows. Adaptateur de dialogue Kivrio Agent UI disponible."
+                : agent.Label + " introuvable via Windows.";
+            if (!ollamaFound)
+            {
+                message = "Ollama introuvable pour " + agent.Label + ".";
+            }
+
+            return new Dictionary<string, object>
+            {
+                { "ok", true },
+                { "agent", agent.Id },
+                { "agentLabel", agent.Label },
+                { "integration", agent.Integration },
+                { "provider", LocalAgentConfig.Provider },
+                { "providerLabel", LocalAgentConfig.ProviderLabel },
+                { "agentMode", "windows-cli" },
+                { "defaultModel", LocalAgentConfig.DefaultModel },
+                { "processModel", "" },
+                { "codexFound", false },
+                { "agentFound", agentFound },
+                { "ollamaFound", ollamaFound },
+                { "ollamaPath", launcherPath ?? "" },
+                { "codexPath", "" },
+                { "agentPath", claudePath ?? "" },
+                { "dialogueConnected", ready },
+                { "mode", mode },
+                { "running", ready },
+                { "ownedProcess", false },
+                { "attachedToExisting", false },
+                { "processId", 0 },
+                { "port", 0 },
+                { "url", "" },
+                { "ready", ready },
+                { "healthy", ready },
+                { "startedAt", 0 },
+                { "lastError", message },
+                { "channel", agent.Channel }
+            };
+        }
+
         public void EnsureDefaultOpenCodeWorkspace()
         {
             try
             {
-                OpenCodeWorkspaceResolver.Resolve(null, _root, true);
+                AgentWorkspaceResolver.Resolve(null, _root, true, "OpenCode", "OpenCode");
+            }
+            catch
+            {
+            }
+        }
+
+        public void EnsureDefaultClaudeWorkspace()
+        {
+            try
+            {
+                AgentWorkspaceResolver.Resolve(null, _root, true, "Claude", "Claude Code");
             }
             catch
             {
@@ -1458,7 +1543,35 @@ namespace KivrioAgentUi
 
         public Dictionary<string, object> ResolveOpenCodeWorkspace(object workspaceSettings, bool create)
         {
-            return OpenCodeWorkspaceResolver.Resolve(workspaceSettings, _root, create).ToDictionary();
+            return AgentWorkspaceResolver.Resolve(workspaceSettings, _root, create, "OpenCode", "OpenCode").ToDictionary();
+        }
+
+        public Dictionary<string, object> ResolveClaudeWorkspace(object workspaceSettings, bool create)
+        {
+            return AgentWorkspaceResolver.Resolve(workspaceSettings, _root, create, "Claude", "Claude Code").ToDictionary();
+        }
+
+        private Dictionary<string, object> ChatWithClaudeWindowsAgent(CodingAgentDefinition agent, string prompt, string systemPrompt, string model, string profile, object claudeWorkspace)
+        {
+            string requestedModel = string.IsNullOrEmpty((model ?? "").Trim())
+                ? LocalAgentConfig.ReadDefaultModel()
+                : LocalAgentConfig.NormalizeModel(model);
+            AgentRunProfile runProfile = AgentRunProfile.FromValue(profile);
+            string ollamaPath = FindOllamaCommand();
+            if (string.IsNullOrWhiteSpace(ollamaPath) || !File.Exists(ollamaPath))
+            {
+                throw new InvalidOperationException("Ollama introuvable pour Claude Code.");
+            }
+
+            string claudePath = FindClaudeCommandForOllamaLaunch();
+            if (string.IsNullOrWhiteSpace(claudePath) || !File.Exists(claudePath))
+            {
+                throw new InvalidOperationException("Claude Code Windows introuvable.");
+            }
+
+            string workspaceRoot = AgentWorkspaceResolver.Resolve(claudeWorkspace, _root, true, "Claude", "Claude Code").WindowsPath;
+            var client = new ClaudeWindowsAgentClient(agent, ollamaPath, claudePath, workspaceRoot, _root);
+            return client.RunTurn(prompt, systemPrompt, requestedModel, runProfile);
         }
 
         private Dictionary<string, object> ChatWithWslAgent(CodingAgentDefinition agent, string prompt, string systemPrompt, string model, string profile, object openCodeWorkspace)
@@ -1479,13 +1592,13 @@ namespace KivrioAgentUi
 
             string codexTestRoot = WslCliAgentClient.GetCodexTestRoot();
             string workspaceRoot = agent.Id == "opencode"
-                ? OpenCodeWorkspaceResolver.Resolve(openCodeWorkspace, _root, true).WindowsPath
+                ? AgentWorkspaceResolver.Resolve(openCodeWorkspace, _root, true, "OpenCode", "OpenCode").WindowsPath
                 : WslCliAgentClient.ResolveWorkspaceRoot(prompt, _root, codexTestRoot);
             var client = new WslCliAgentClient(agent, wsl, workspaceRoot, _root, codexTestRoot);
             return client.RunTurn(prompt, systemPrompt, requestedModel, runProfile);
         }
 
-        private sealed class OpenCodeWorkspaceResult
+        private sealed class AgentWorkspaceResult
         {
             public string BaseFolder;
             public string WorkDirectory;
@@ -1515,12 +1628,11 @@ namespace KivrioAgentUi
             }
         }
 
-        private static class OpenCodeWorkspaceResolver
+        private static class AgentWorkspaceResolver
         {
             private const string DefaultBaseFolder = "documents";
-            private const string DefaultWorkDirectory = "OpenCode";
 
-            public static OpenCodeWorkspaceResult Resolve(object rawSettings, string kivrioRoot, bool create)
+            public static AgentWorkspaceResult Resolve(object rawSettings, string kivrioRoot, bool create, string defaultWorkDirectory, string agentLabel)
             {
                 Dictionary<string, object> settings = rawSettings as Dictionary<string, object> ?? new Dictionary<string, object>();
                 string baseFolder = NormalizeBaseFolder(ReadString(settings, "baseFolder"));
@@ -1528,7 +1640,7 @@ namespace KivrioAgentUi
                 string customBasePath = ReadString(settings, "customBasePath").Trim();
                 if (string.IsNullOrWhiteSpace(workDirectory))
                 {
-                    workDirectory = DefaultWorkDirectory;
+                    workDirectory = defaultWorkDirectory;
                 }
 
                 string basePath = ResolveBasePath(baseFolder, customBasePath);
@@ -1536,7 +1648,7 @@ namespace KivrioAgentUi
 
                 if (PathsOverlap(target, kivrioRoot))
                 {
-                    throw new InvalidOperationException("Le dossier de travail OpenCode ne peut pas etre le dossier Kivrio Agent UI ni l'un de ses parents.");
+                    throw new InvalidOperationException("Le dossier de travail " + agentLabel + " ne peut pas etre le dossier Kivrio Agent UI ni l'un de ses parents.");
                 }
 
                 bool existed = Directory.Exists(target);
@@ -1548,10 +1660,10 @@ namespace KivrioAgentUi
                 }
                 bool existsNow = Directory.Exists(target);
                 string message = existsNow
-                    ? (created ? "Dossier OpenCode cree et pret." : "Dossier OpenCode valide.")
+                    ? (created ? "Dossier " + agentLabel + " cree et pret." : "Dossier " + agentLabel + " valide.")
                     : "Dossier introuvable. Il sera cree a l'enregistrement.";
 
-                return new OpenCodeWorkspaceResult
+                return new AgentWorkspaceResult
                 {
                     BaseFolder = baseFolder,
                     WorkDirectory = workDirectory,
@@ -1635,7 +1747,7 @@ namespace KivrioAgentUi
                 string[] parts = workDirectory.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length == 0)
                 {
-                    parts = new[] { DefaultWorkDirectory };
+                    throw new InvalidOperationException("Le repertoire de travail est vide.");
                 }
                 char[] invalidChars = Path.GetInvalidFileNameChars();
                 for (int i = 0; i < parts.Length; i++)
@@ -1700,6 +1812,204 @@ namespace KivrioAgentUi
                     return "/mnt/" + drive + "/" + rest;
                 }
                 return full.Replace('\\', '/');
+            }
+        }
+
+        private sealed class ClaudeWindowsAgentClient
+        {
+            private readonly CodingAgentDefinition _agent;
+            private readonly string _ollamaPath;
+            private readonly string _claudePath;
+            private readonly string _workspaceRoot;
+            private readonly string _kivrioRoot;
+
+            public ClaudeWindowsAgentClient(CodingAgentDefinition agent, string ollamaPath, string claudePath, string workspaceRoot, string kivrioRoot)
+            {
+                _agent = agent;
+                _ollamaPath = ollamaPath;
+                _claudePath = claudePath;
+                _workspaceRoot = workspaceRoot;
+                _kivrioRoot = kivrioRoot;
+            }
+
+            public Dictionary<string, object> RunTurn(string prompt, string systemPrompt, string model, AgentRunProfile profile)
+            {
+                AgentRunProfile runProfile = profile ?? AgentRunProfile.FromValue(null);
+                string requestedModel = LocalAgentConfig.NormalizeModel(model);
+                string input = BuildAgentPrompt(prompt, systemPrompt, requestedModel, runProfile);
+                string arguments = BuildClaudeLaunchArguments(requestedModel);
+                ProcessCapture capture = RunProcessCaptureWithInput(
+                    _ollamaPath,
+                    arguments,
+                    input,
+                    ReadClaudeTurnTimeoutMs(runProfile),
+                    _workspaceRoot,
+                    BuildClaudeLaunchPath(_claudePath)
+                );
+
+                if (!capture.Started)
+                {
+                    throw new InvalidOperationException(_agent.Label + " n'a pas pu demarrer via Ollama: " + (capture.StartError ?? "erreur inconnue."));
+                }
+                if (capture.TimedOut)
+                {
+                    throw new TimeoutException("Temps maximal depasse pendant la reponse " + _agent.Label + " (" + (ReadClaudeTurnTimeoutMs(runProfile) / 1000) + " secondes).");
+                }
+                if (capture.ExitCode != 0)
+                {
+                    throw new InvalidOperationException(_agent.Label + " via Ollama a echoue: " + BuildProcessError(capture));
+                }
+
+                string answer = ExtractAnswer(capture.Output);
+                if (string.IsNullOrWhiteSpace(answer))
+                {
+                    answer = StripAnsi(capture.Output ?? "").Trim();
+                }
+                if (string.IsNullOrWhiteSpace(answer))
+                {
+                    answer = _agent.Label + " n'a pas retourne de texte.";
+                }
+
+                return new Dictionary<string, object>
+                {
+                    { "ok", true },
+                    { "answer", answer },
+                    { "reasoning", "" },
+                    { "threadId", "" },
+                    { "turnId", "" },
+                    { "model", requestedModel },
+                    { "provider", LocalAgentConfig.Provider },
+                    { "agent", _agent.Id },
+                    { "agentLabel", _agent.Label },
+                    { "providerLabel", LocalAgentConfig.ProviderLabel },
+                    { "agentMode", "windows-cli" },
+                    { "requestedModel", requestedModel },
+                    { "effectiveModel", requestedModel },
+                    { "requestedProvider", LocalAgentConfig.Provider },
+                    { "effectiveProvider", LocalAgentConfig.Provider },
+                    { "profile", runProfile.Id },
+                    { "profileLabel", runProfile.Label },
+                    { "turnTimeoutMs", ReadClaudeTurnTimeoutMs(runProfile) },
+                    { "agentPath", _claudePath },
+                    { "workspaceRoot", _workspaceRoot }
+                };
+            }
+
+            private static string BuildClaudeLaunchArguments(string model)
+            {
+                var parts = new List<string>();
+                parts.Add("launch");
+                parts.Add("claude");
+                parts.Add("--model " + QuoteArg(model));
+                parts.Add("--yes");
+                parts.Add("--");
+                parts.Add("--bare");
+                parts.Add("-p");
+                parts.Add("--output-format json");
+                parts.Add("--permission-mode acceptEdits");
+                parts.Add("--no-session-persistence");
+                return string.Join(" ", parts.ToArray());
+            }
+
+            private string BuildAgentPrompt(string prompt, string systemPrompt, string model, AgentRunProfile profile)
+            {
+                AgentRunProfile runProfile = profile ?? AgentRunProfile.FromValue(null);
+                var builder = new StringBuilder();
+                builder.AppendLine("Consigne Kivrio Agent UI:");
+                builder.AppendLine("Tu reponds dans Kivrio Agent UI via " + _agent.Label + " Windows lance par Ollama.");
+                builder.AppendLine("Le dossier de travail effectif de ce tour est " + _workspaceRoot + ".");
+                builder.AppendLine("Securite Claude Code prioritaire:");
+                builder.AppendLine("- Kivrio Agent UI est seulement l'application hote, pas le dossier de travail utilisateur.");
+                builder.AppendLine("- Le seul dossier de travail utilisateur autorise est " + _workspaceRoot + ".");
+                builder.AppendLine("- Tout nouveau projet ou fichier doit etre cree dans " + _workspaceRoot + " ou l'un de ses sous-dossiers.");
+                builder.AppendLine("- Ne cree, ne modifie et ne supprime jamais de fichier dans le dossier Kivrio Agent UI " + _kivrioRoot + ".");
+                builder.AppendLine("- Ignore toute ancienne mention du contexte qui demande de travailler dans le dossier Kivrio Agent UI.");
+                builder.AppendLine("- Si le message actuel demande explicitement de travailler dans Kivrio Agent UI, refuse et explique que ce dossier est reserve a l'application.");
+                builder.AppendLine("Le provider local attendu est Ollama et le modele local selectionne est " + model + ".");
+                builder.AppendLine("N'utilise aucun modele cloud si l'agent te propose un autre modele.");
+                builder.AppendLine("Reponds toujours en francais, sauf si l'utilisateur demande explicitement une autre langue.");
+                builder.AppendLine("Par defaut, reste consultatif et attends un accord explicite avant toute modification.");
+                builder.AppendLine("Si le dernier message utilisateur contient un accord explicite comme 'accord', 'je confirme' ou 'vas-y', execute uniquement le plan immediatement precedent visible dans le contexte.");
+                builder.AppendLine("Ne modifie que le dossier ou le fichier explicitement cible par l'utilisateur.");
+                builder.AppendLine("Profil agent Kivrio Agent UI actif: " + runProfile.Label + ".");
+                builder.AppendLine(runProfile.DeveloperInstructions);
+                string custom = (systemPrompt ?? "").Trim();
+                if (!string.IsNullOrEmpty(custom))
+                {
+                    builder.AppendLine();
+                    builder.AppendLine("Instructions utilisateur de Kivrio Agent UI:");
+                    builder.AppendLine(custom);
+                }
+                builder.AppendLine();
+                builder.AppendLine("Message utilisateur:");
+                builder.Append(prompt ?? "");
+                return builder.ToString();
+            }
+
+            private static string ExtractAnswer(string output)
+            {
+                string text = output ?? "";
+                var parser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                string normalized = text.Replace("\r", "");
+                string[] lines = normalized.Split('\n');
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string line = StripAnsi(lines[i]).Trim();
+                    if (string.IsNullOrEmpty(line) || line[0] != '{') continue;
+                    try
+                    {
+                        Dictionary<string, object> item = parser.DeserializeObject(line) as Dictionary<string, object>;
+                        string result = GetStringValue(item, "result");
+                        if (!string.IsNullOrWhiteSpace(result))
+                        {
+                            return result.Trim();
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+                return StripAnsi(text).Trim();
+            }
+
+            private static string GetStringValue(Dictionary<string, object> dict, string key)
+            {
+                if (dict == null) return "";
+                object value;
+                return dict.TryGetValue(key, out value) && value != null ? Convert.ToString(value) : "";
+            }
+
+            private static string StripAnsi(string value)
+            {
+                return Regex.Replace(value ?? "", "\x1B\\[[0-?]*[ -/]*[@-~]", "");
+            }
+
+            private static string BuildProcessError(ProcessCapture capture)
+            {
+                string error = StripAnsi(((capture.Error ?? "") + "\n" + (capture.Output ?? "")).Trim());
+                if (string.IsNullOrWhiteSpace(error))
+                {
+                    error = "code de sortie " + capture.ExitCode + ".";
+                }
+                return error.Trim();
+            }
+
+            private static int ReadClaudeTurnTimeoutMs(AgentRunProfile profile)
+            {
+                string secondsValue = (Environment.GetEnvironmentVariable("KIVRIO_CLAUDE_AGENT_TIMEOUT_SECONDS") ?? "").Trim();
+                int seconds;
+                if (int.TryParse(secondsValue, out seconds) && seconds > 0)
+                {
+                    return Clamp(seconds * 1000, 60000, 3600000);
+                }
+                return Clamp((profile ?? AgentRunProfile.FromValue(null)).DefaultTimeoutMs, 60000, 3600000);
+            }
+
+            private static int Clamp(int value, int min, int max)
+            {
+                if (value < min) return min;
+                if (value > max) return max;
+                return value;
             }
         }
 
@@ -2213,6 +2523,11 @@ namespace KivrioAgentUi
 
         private static ProcessCapture RunProcessCaptureWithInput(string fileName, string arguments, string input, int timeoutMs)
         {
+            return RunProcessCaptureWithInput(fileName, arguments, input, timeoutMs, "", "");
+        }
+
+        private static ProcessCapture RunProcessCaptureWithInput(string fileName, string arguments, string input, int timeoutMs, string workingDirectory, string pathOverride)
+        {
             var capture = new ProcessCapture { ExitCode = -1, Output = "", Error = "" };
             try
             {
@@ -2226,6 +2541,14 @@ namespace KivrioAgentUi
                     RedirectStandardOutput = true,
                     RedirectStandardError = true
                 };
+                if (!string.IsNullOrWhiteSpace(workingDirectory) && Directory.Exists(workingDirectory))
+                {
+                    info.WorkingDirectory = workingDirectory;
+                }
+                if (!string.IsNullOrWhiteSpace(pathOverride))
+                {
+                    info.EnvironmentVariables["PATH"] = pathOverride;
+                }
 
                 try
                 {
@@ -2590,6 +2913,31 @@ namespace KivrioAgentUi
             return null;
         }
 
+        private static string FindClaudeCommandForOllamaLaunch()
+        {
+            string configured = (Environment.GetEnvironmentVariable("KIVRIO_CLAUDE_PATH") ?? "").Trim();
+            if (File.Exists(configured)) return configured;
+
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string[] candidates = new[]
+            {
+                Path.Combine(userProfile, ".local", "bin", "claude.exe"),
+                Path.Combine(userProfile, ".local", "bin", "claude.cmd"),
+                FindOnPathOutsideWindowsApps("claude.exe"),
+                FindOnPathOutsideWindowsApps("claude.cmd"),
+                FindOnPathOutsideWindowsApps("claude")
+            };
+
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(candidates[i]) && File.Exists(candidates[i]))
+                {
+                    return candidates[i];
+                }
+            }
+            return null;
+        }
+
         private static string BuildOllamaLaunchPath(string codexPath)
         {
             var dirs = new List<string>();
@@ -2597,6 +2945,21 @@ namespace KivrioAgentUi
             AddPathDir(dirs, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", ".sandbox-bin"));
             AddPathDir(dirs, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm"));
             AddPathDir(dirs, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenAI", "Codex", "bin"));
+
+            string path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            string[] existing = path.Split(Path.PathSeparator);
+            for (int i = 0; i < existing.Length; i++)
+            {
+                AddPathDir(dirs, existing[i]);
+            }
+            return string.Join(Path.PathSeparator.ToString(), dirs.ToArray());
+        }
+
+        private static string BuildClaudeLaunchPath(string claudePath)
+        {
+            var dirs = new List<string>();
+            AddPathDir(dirs, Path.GetDirectoryName(claudePath));
+            AddPathDir(dirs, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin"));
 
             string path = Environment.GetEnvironmentVariable("PATH") ?? "";
             string[] existing = path.Split(Path.PathSeparator);

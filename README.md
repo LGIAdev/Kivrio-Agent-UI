@@ -7,7 +7,7 @@ Kivrio Agent UI is a local interface for using Codex CLI more comfortably with l
 It provides a desktop-style web UI with math rendering, local conversation history, and a fully local persistence layer.
 
 Status: project under active development.
-Version: Kivrio Agent UI 2026.5.6.
+Version: Kivrio Agent UI 2026.5.7.
 
 ---
 

@@ -10,20 +10,33 @@ const DEFAULT_OPENCODE_WORKSPACE = Object.freeze({
   workDirectory: 'OpenCode',
   customBasePath: '',
 });
+const DEFAULT_CLAUDE_WORKSPACE = Object.freeze({
+  baseFolder: 'documents',
+  workDirectory: 'Claude',
+  customBasePath: '',
+});
 
 // Lecture sûre localStorage
 const getLS = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const setLS = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 
-function normalizeOpenCodeWorkspace(value) {
+function normalizeWorkspace(value, defaults) {
   const raw = value && typeof value === 'object' ? value : {};
   const allowedBaseFolders = new Set(['documents', 'desktop', 'pictures', 'downloads', 'custom']);
   const baseFolder = allowedBaseFolders.has(String(raw.baseFolder || '').trim().toLowerCase())
     ? String(raw.baseFolder).trim().toLowerCase()
-    : DEFAULT_OPENCODE_WORKSPACE.baseFolder;
-  const workDirectory = String(raw.workDirectory || '').trim() || DEFAULT_OPENCODE_WORKSPACE.workDirectory;
+    : defaults.baseFolder;
+  const workDirectory = String(raw.workDirectory || '').trim() || defaults.workDirectory;
   const customBasePath = String(raw.customBasePath || '').trim();
   return { baseFolder, workDirectory, customBasePath };
+}
+
+function normalizeOpenCodeWorkspace(value) {
+  return normalizeWorkspace(value, DEFAULT_OPENCODE_WORKSPACE);
+}
+
+function normalizeClaudeWorkspace(value) {
+  return normalizeWorkspace(value, DEFAULT_CLAUDE_WORKSPACE);
 }
 
 function readSettingsJson(preferredKey = KEY) {
@@ -46,6 +59,7 @@ const initial = (() => {
       agent_profile: DEFAULT_AGENT_PROFILE,
       coding_agent: DEFAULT_CODING_AGENT,
       opencode_workspace: DEFAULT_OPENCODE_WORKSPACE,
+      claude_workspace: DEFAULT_CLAUDE_WORKSPACE,
     };
     const st = Object.assign(base, json);
     // Fallback : si pas de modèle en state, lire ancienne clé 'ollamaModel'
@@ -56,6 +70,7 @@ const initial = (() => {
     st.agent_profile = normalizeAgentProfile(st.agent_profile);
     st.coding_agent = normalizeCodingAgent(st.coding_agent);
     st.opencode_workspace = normalizeOpenCodeWorkspace(st.opencode_workspace);
+    st.claude_workspace = normalizeClaudeWorkspace(st.claude_workspace);
     return st;
   } catch {
     // Fallback dur si JSON cassé
@@ -65,7 +80,8 @@ const initial = (() => {
       ollama_url: 'http://127.0.0.1:11434',
       agent_profile: DEFAULT_AGENT_PROFILE,
       coding_agent: DEFAULT_CODING_AGENT,
-      opencode_workspace: DEFAULT_OPENCODE_WORKSPACE
+      opencode_workspace: DEFAULT_OPENCODE_WORKSPACE,
+      claude_workspace: DEFAULT_CLAUDE_WORKSPACE
     };
   }
 })();
@@ -118,6 +134,16 @@ export const setOpenCodeWorkspace = (settings) => {
   }));
 };
 
+export const getClaudeWorkspace = () => ({ ...normalizeClaudeWorkspace(state.claude_workspace) });
+
+export const setClaudeWorkspace = (settings) => {
+  state.claude_workspace = normalizeClaudeWorkspace(settings);
+  persist();
+  document.dispatchEvent(new CustomEvent('settings:claude-workspace-changed', {
+    detail: { ...state.claude_workspace },
+  }));
+};
+
 export const getOllamaUrl = () => state.ollama_url.replace(/\/+$/, '');
 
 export const setOllamaUrl = (u) => {
@@ -155,6 +181,13 @@ window.addEventListener?.('storage', (ev) => {
         state.opencode_workspace = nextWorkspace;
         document.dispatchEvent(new CustomEvent('settings:opencode-workspace-changed', {
           detail: { ...state.opencode_workspace },
+        }));
+      }
+      const nextClaudeWorkspace = normalizeClaudeWorkspace(next.claude_workspace);
+      if (JSON.stringify(nextClaudeWorkspace) !== JSON.stringify(state.claude_workspace)) {
+        state.claude_workspace = nextClaudeWorkspace;
+        document.dispatchEvent(new CustomEvent('settings:claude-workspace-changed', {
+          detail: { ...state.claude_workspace },
         }));
       }
     } catch {}

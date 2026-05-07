@@ -153,7 +153,16 @@ export function getAgentDiagnostic(agent) {
 }
 
 export function resolveOpenCodeWorkspace(workspace, options = {}) {
-  return request('/api/agent/opencode/workspace', {
+  return resolveCodingAgentWorkspace('opencode', workspace, options);
+}
+
+export function resolveClaudeWorkspace(workspace, options = {}) {
+  return resolveCodingAgentWorkspace('claude', workspace, options);
+}
+
+export function resolveCodingAgentWorkspace(agent, workspace, options = {}) {
+  const agentId = String(agent || '').trim().toLowerCase() || 'opencode';
+  return request(`/api/agent/${encodeURIComponent(agentId)}/workspace`, {
     method: 'POST',
     body: {
       workspace: workspace || {},

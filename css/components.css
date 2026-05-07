@@ -390,6 +390,8 @@
 .settings-body{ padding:16px; }
 .settings-section{ display:flex; flex-direction:column; gap:16px; }
 .settings-title{ font-weight:600; color:var(--muted); font-size:.9rem; }
+.agent-settings-panel{ display:flex; flex-direction:column; gap:16px; }
+.agent-settings-panel[hidden]{ display:none; }
 .settings-item{ display:grid; grid-template-columns:140px 1fr; gap:12px; align-items:center; }
 .settings-item-stack{ align-items:start; }
 .settings-controls{ display:flex; gap:16px; align-items:center; }
@@ -496,6 +498,18 @@
   width:100%;
   padding:12px 0 16px;
   background:linear-gradient(180deg, rgba(11, 13, 18, 0), var(--bg) 34%);
+}
+.main.composer-idle .center{
+  flex:0 0 auto;
+  min-height:0;
+  overflow:visible;
+  padding-bottom:6px;
+}
+.main.composer-idle .composer-dock{
+  position:static;
+  bottom:auto;
+  padding:12px 0 16px;
+  background:transparent;
 }
 .composer-card{
   background:var(--surface-field);

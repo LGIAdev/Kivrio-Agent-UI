@@ -5,6 +5,7 @@ import { wireUserMenu, wirePromptModal, wireSettingsModal } from './ui/menus.js'
 import { wireSendAction, mountStatusPill } from './ui/actions.js';
 import { initAuthGate, wireLogout } from './auth/logout.js';
 import { wireUploads } from './features/uploads.js';
+import { clearChat } from './chat/render.js';
 import { regenerateFromEditedMessage } from './net/ollama.js';
 import { getCodingAgent } from './store/settings.js';
 import('./features/math/katex-init.js')
@@ -69,15 +70,23 @@ function cancelOngoingStream() {
   }
 }
 
+function setComposerIdle() {
+  const main = $('.main');
+  if (!main) return;
+  main.classList.remove('composer-active');
+  main.classList.add('composer-idle');
+}
+
 function clearChatUI() {
   try {
-    if (typeof window.clearChat === 'function') {
-      window.clearChat();
-      return;
-    }
-  } catch (_) {}
+    clearChat();
+    return;
+  } catch (e) {
+    console.warn('[clearChatUI] fallback', e);
+  }
   const log = $(SEL.chatLog);
   if (log) log.innerHTML = '';
+  setComposerIdle();
   try { window.kivrioClearPendingUploads?.(); } catch (_) {}
 }
 

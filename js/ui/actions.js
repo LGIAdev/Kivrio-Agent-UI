@@ -87,7 +87,7 @@ export function mountStatusPill({ authenticated = false } = {}){
         setPill(codexPill, 'bad', agentReadyLabel(status, 'indisponible'), title);
       }
     }catch(e){
-      setPill(codexPill, 'bad','Ollama Codex CLI indisponible', e?.message || 'Ollama Codex CLI indisponible');
+      setPill(codexPill, 'bad','Agent indisponible', e?.message || 'Agent indisponible');
     }
   };
   const holder = document.createElement('span');
