@@ -1,7 +1,9 @@
 @echo off
 setlocal
 for %%I in ("%~dp0.") do set "ROOT=%%~fI"
-set "PORT=8000"
+set "APP_ID=kivrio-agent-ui"
+set "PORT_START=8010"
+set "PORT_END=8019"
 set "SERVER_EXE=%ROOT%\bin\kivrio-agent-ui-server.exe"
 set "SERVER_SRC=%ROOT%\server\KivrioAgentUiServer.cs"
 set "WAIT_SECONDS=30"
@@ -21,12 +23,27 @@ if "%NEED_COMPILE%"=="1" (
   )
 )
 
-netstat -ano | findstr /R /C:":%PORT% .*LISTENING" >nul && set "PORT=8001"
+call :is_port_busy %PORT_START%
+if not errorlevel 1 (
+  call :is_expected_app %PORT_START%
+  if not errorlevel 1 (
+    set "PORT=%PORT_START%"
+    goto open_browser
+  )
+  call :find_free_port
+  if errorlevel 1 (
+    echo [ERREUR] Aucun port local disponible pour Kivrio Agent UI entre %PORT_START% et %PORT_END%.
+    exit /b 1
+  )
+  goto start_server
+)
 
+set "PORT=%PORT_START%"
+
+:start_server
 start "" /D "%ROOT%" "%SERVER_EXE%" --root "%ROOT%" --host 127.0.0.1 --port %PORT%
-set "STATUS_URL=http://127.0.0.1:%PORT%/api/auth/status"
 for /L %%I in (1,1,%WAIT_SECONDS%) do (
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -UseBasicParsing -Uri '%STATUS_URL%' -TimeoutSec 2; if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>nul
+  call :is_expected_app %PORT%
   if not errorlevel 1 goto open_browser
   timeout /t 1 /nobreak >nul
 )
@@ -56,3 +73,21 @@ if errorlevel 1 (
   exit /b 1
 )
 exit /b 0
+
+:is_port_busy
+netstat -ano | findstr /R /C:":%~1 .*LISTENING" >nul
+exit /b %errorlevel%
+
+:find_free_port
+for /L %%P in (%PORT_START%,1,%PORT_END%) do (
+  call :is_port_busy %%P
+  if errorlevel 1 (
+    set "PORT=%%P"
+    exit /b 0
+  )
+)
+exit /b 1
+
+:is_expected_app
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $u = 'http://127.0.0.1:%~1/api/health'; $req = [System.Net.WebRequest]::Create($u); $req.Timeout = 300; $req.ReadWriteTimeout = 300; $res = $req.GetResponse(); $reader = [System.IO.StreamReader]::new($res.GetResponseStream()); $j = $reader.ReadToEnd() | ConvertFrom-Json; $reader.Close(); $res.Close(); if ($j.app -eq '%APP_ID%') { exit 0 } } catch { } exit 1" >nul 2>nul
+exit /b %errorlevel%

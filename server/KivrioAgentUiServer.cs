@@ -179,7 +179,7 @@ namespace KivrioAgentUi
 
             if (method == "GET" && path == "/api/health")
             {
-                return Json(new Dictionary<string, object> { { "ok", true }, { "store", "json" } });
+                return Json(new Dictionary<string, object> { { "ok", true }, { "app", "kivrio-agent-ui" }, { "title", "Kivrio Agent UI" }, { "store", "json" } });
             }
 
             if (method == "GET" && path == "/api/auth/status")
